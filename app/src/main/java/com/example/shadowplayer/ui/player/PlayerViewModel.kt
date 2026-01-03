@@ -8,24 +8,24 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.shadowplayer.data.entity.AudioFile
 import com.example.shadowplayer.data.repository.AudioRepository
-import com.example.shadowplayer.player.AudioPlayer
-import com.example.shadowplayer.player.LrcParser
 import com.example.shadowplayer.player.PlaybackSettings
-import com.example.shadowplayer.player.Sentence
 import com.example.shadowplayer.player.SentencePlayer
+import com.example.shadowplayer.player.SentencePlayerState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import javax.inject.Inject
 
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
-    private val audioPlayer: AudioPlayer,
+    private val sentencePlayer: SentencePlayer,
     private val repository: AudioRepository,
     @ApplicationContext private val context: Context,
     savedStateHandle: SavedStateHandle
@@ -38,101 +38,39 @@ class PlayerViewModel @Inject constructor(
     private val _currentAudioFile = MutableStateFlow<AudioFile?>(null)
     val currentAudioFile: StateFlow<AudioFile?> = _currentAudioFile.asStateFlow()
 
-    private val _sentences = MutableStateFlow<List<Sentence>>(emptyList())
-    val sentences: StateFlow<List<Sentence>> = _sentences.asStateFlow()
-
-    private val _currentSentenceIndex = MutableStateFlow(0)
-    val currentSentenceIndex: StateFlow<Int> = _currentSentenceIndex.asStateFlow()
-
-    private val _isPlaying = MutableStateFlow(false)
-    val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
-
-    private val _currentPosition = MutableStateFlow(0L)
-    val currentPosition: StateFlow<Long> = _currentPosition.asStateFlow()
-
-    private val _duration = MutableStateFlow(0L)
-    val duration: StateFlow<Long> = _duration.asStateFlow()
-
-    private val _playbackSettings = MutableStateFlow(PlaybackSettings())
-    val playbackSettings: StateFlow<PlaybackSettings> = _playbackSettings.asStateFlow()
-
-    private val _currentRepeat = MutableStateFlow(0)
-    val currentRepeat: StateFlow<Int> = _currentRepeat.asStateFlow()
-
-    private val _isInInterval = MutableStateFlow(false)
-    val isInInterval: StateFlow<Boolean> = _isInInterval.asStateFlow()
-
-    private val _intervalCountdown = MutableStateFlow(0)
-    val intervalCountdown: StateFlow<Int> = _intervalCountdown.asStateFlow()
-
-    private val _showSubtitle = MutableStateFlow(true)
-    val showSubtitle: StateFlow<Boolean> = _showSubtitle.asStateFlow()
-
-    private val sentencePlayer = SentencePlayer(
-        audioPlayer = audioPlayer,
-        scope = viewModelScope,
-        onSentenceChanged = { index ->
-            Log.d(TAG, "onSentenceChanged: $index")
-            _currentSentenceIndex.value = index
-        },
-        onRepeatChanged = { repeat ->
-            Log.d(TAG, "onRepeatChanged: $repeat")
-            _currentRepeat.value = repeat
-        },
-        onIntervalStart = { countdown ->
-            Log.d(TAG, "onIntervalStart: $countdown")
-            _isInInterval.value = true
-            _intervalCountdown.value = countdown
-        },
-        onIntervalTick = { remaining ->
-            _intervalCountdown.value = remaining
-        },
-        onIntervalEnd = {
-            Log.d(TAG, "onIntervalEnd")
-            _isInInterval.value = false
-        },
-        onPositionChanged = { position ->
-            _currentPosition.value = position
-        }
-    )
+    // 直接暴露 SentencePlayer 的状态供 UI 使用
+    val playerState: StateFlow<SentencePlayerState> = sentencePlayer.state
+    val settings: StateFlow<PlaybackSettings> = sentencePlayer.settings
 
     init {
         Log.d(TAG, "PlayerViewModel init")
 
-        // 获取导航传递的 audioId
-        val audioId: Long? = savedStateHandle.get<Long>("audioId")
-        Log.d(TAG, "Received audioId from navigation: $audioId")
+        // 获取参数，如果没有传递则为 -1L (在 AppNavigation 中定义的默认值)
+        val audioId = savedStateHandle.get<Long>("audioId") ?: -1L
+        Log.d(TAG, "Received audioId: $audioId")
 
-        if (audioId != null && audioId > 0) {
-            loadAudioById(audioId)
+        if (audioId > 0) {
+            // 只有当传入的新 ID 与当前正在播放的 ID 不同时才重新加载
+            // 避免重复点击导致重置播放进度
+            val currentId = currentAudioFile.value?.id
+            if (currentId != audioId) {
+                loadAudioById(audioId)
+            }
         } else {
-            Log.e(TAG, "Invalid audioId: $audioId")
-        }
-
-        // 监听播放状态
-        viewModelScope.launch {
-            audioPlayer.isPlaying.collect { playing ->
-                Log.d(TAG, "isPlaying changed: $playing")
-                _isPlaying.value = playing
-            }
-        }
-
-        viewModelScope.launch {
-            audioPlayer.duration.collect { dur ->
-                Log.d(TAG, "duration changed: $dur")
-                _duration.value = dur
-            }
+            // 如果 audioId 为 -1，说明是直接点击 Tab 进来的
+            // 此时不需要做任何操作，显示之前的播放状态即可
+            Log.d(TAG, "No audioId passed, keeping current state")
         }
     }
 
     private fun loadAudioById(audioId: Long) {
-        Log.d(TAG, "loadAudioById: $audioId")
         viewModelScope.launch {
             try {
-                val audioFile = repository.getAudioFileById(audioId)
-                Log.d(TAG, "Repository returned audioFile: $audioFile")
+                // --- 修复点：使用正确的方法名 getAudioById ---
+                val audioFile = repository.getAudioById(audioId)
 
                 if (audioFile != null) {
+                    // 此时 audioFile 类型确认为 AudioFile，不再是 Any，消除了类型不匹配错误
                     loadAudio(audioFile)
                 } else {
                     Log.e(TAG, "AudioFile not found for id: $audioId")
@@ -143,155 +81,97 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    fun loadAudio(audioFile: AudioFile) {
-        Log.d(TAG, "=== loadAudio called ===")
-        Log.d(TAG, "AudioFile id: ${audioFile.id}")
-        Log.d(TAG, "AudioFile path: ${audioFile.path}")
-        Log.d(TAG, "AudioFile title: ${audioFile.title}")
-        Log.d(TAG, "AudioFile lrcPath: ${audioFile.lrcPath}")
+    private fun loadAudio(audioFile: AudioFile) {
+        _currentAudioFile.value = audioFile
 
         viewModelScope.launch {
-            try {
-                _currentAudioFile.value = audioFile
-
-                // 加载音频
-                Log.d(TAG, "Calling audioPlayer.loadAudio...")
-                audioPlayer.loadAudio(audioFile.path)
-                Log.d(TAG, "audioPlayer.loadAudio completed")
-
-                // 加载字幕
-                if (!audioFile.lrcPath.isNullOrEmpty()) {
-                    Log.d(TAG, "Loading LRC from: ${audioFile.lrcPath}")
-                    loadLrc(audioFile.lrcPath!!)
-                } else {
-                    Log.d(TAG, "No LRC file available")
-                    _sentences.value = emptyList()
-                }
-
-                // 设置句子到播放器
-                sentencePlayer.setSentences(_sentences.value)
-                sentencePlayer.setSettings(_playbackSettings.value)
-
-                // 恢复上次播放位置
-                if (audioFile.lastPosition > 0) {
-                    Log.d(TAG, "Seeking to last position: ${audioFile.lastPosition}")
-                    sentencePlayer.seekTo(audioFile.lastPosition)
-                }
-
-                // 更新播放次数
-                repository.incrementPlayCount(audioFile.id)
-
-                Log.d(TAG, "=== loadAudio completed successfully ===")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in loadAudio", e)
+            // 读取 LRC 内容
+            val lrcContent = if (!audioFile.lrcPath.isNullOrEmpty()) {
+                readLrcContent(audioFile.lrcPath!!)
+            } else {
+                null
             }
+
+            // 调用 SentencePlayer 加载音频和字幕
+            sentencePlayer.load(audioFile.path, lrcContent)
+
+            // 恢复上次播放位置
+            if (audioFile.lastPosition > 0) {
+                sentencePlayer.seekTo(audioFile.lastPosition)
+            }
+
+            // 更新播放次数
+            repository.incrementPlayCount(audioFile.id)
         }
     }
 
-    private fun loadLrc(lrcPath: String) {
-        Log.d(TAG, "loadLrc: $lrcPath")
+    // 辅助方法：读取 LRC 文件内容
+    private suspend fun readLrcContent(lrcPath: String): String? = withContext(Dispatchers.IO) {
         try {
             val uri = Uri.parse(lrcPath)
-            Log.d(TAG, "LRC URI: $uri")
-
-            val inputStream = context.contentResolver.openInputStream(uri)
-            if (inputStream == null) {
-                Log.e(TAG, "Failed to open LRC inputStream")
-                return
-            }
-
-            val reader = BufferedReader(InputStreamReader(inputStream))
-            val content = reader.readText()
-            reader.close()
-
-            Log.d(TAG, "LRC content length: ${content.length}")
-            Log.d(TAG, "LRC content preview: ${content.take(200)}")
-
-            val parser = LrcParser()
-            val parsedSentences = parser.parse(content, _duration.value)
-            Log.d(TAG, "Parsed ${parsedSentences.size} sentences")
-
-            _sentences.value = parsedSentences
-
-            if (parsedSentences.isNotEmpty()) {
-                Log.d(TAG, "First sentence: ${parsedSentences.first()}")
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                BufferedReader(InputStreamReader(inputStream)).readText()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error loading LRC", e)
-            _sentences.value = emptyList()
+            Log.e(TAG, "Error reading LRC file", e)
+            null
         }
     }
 
+    // --- 播放控制 (委托给 SentencePlayer) ---
+
     fun togglePlayPause() {
-        Log.d(TAG, "togglePlayPause called, current isPlaying: ${_isPlaying.value}")
-        if (_isPlaying.value) {
-            sentencePlayer.pause()
-        } else {
-            sentencePlayer.play()
-        }
+        sentencePlayer.togglePlayPause()
     }
 
     fun nextSentence() {
-        Log.d(TAG, "nextSentence called")
         sentencePlayer.nextSentence()
     }
 
     fun previousSentence() {
-        Log.d(TAG, "previousSentence called")
         sentencePlayer.previousSentence()
     }
 
     fun seekToSentence(index: Int) {
-        Log.d(TAG, "seekToSentence: $index")
         sentencePlayer.seekToSentence(index)
     }
 
     fun seekTo(position: Long) {
-        Log.d(TAG, "seekTo: $position")
         sentencePlayer.seekTo(position)
     }
 
+    // --- 设置控制 (委托给 SentencePlayer) ---
+
     fun setSpeed(speed: Float) {
-        Log.d(TAG, "setSpeed: $speed")
-        _playbackSettings.value = _playbackSettings.value.copy(speed = speed)
-        sentencePlayer.setSettings(_playbackSettings.value)
-        audioPlayer.setSpeed(speed)
+        sentencePlayer.setSpeed(speed)
     }
 
     fun setRepeatCount(count: Int) {
-        Log.d(TAG, "setRepeatCount: $count")
-        _playbackSettings.value = _playbackSettings.value.copy(repeatCount = count)
-        sentencePlayer.setSettings(_playbackSettings.value)
+        sentencePlayer.setRepeatCount(count)
     }
 
-    fun setInterval(seconds: Int) {
-        Log.d(TAG, "setInterval: $seconds")
-        _playbackSettings.value = _playbackSettings.value.copy(intervalSeconds = seconds)
-        sentencePlayer.setSettings(_playbackSettings.value)
+    fun setRepeatInterval(interval: Long) {
+        sentencePlayer.setRepeatInterval(interval)
     }
 
     fun toggleSubtitle() {
-        _showSubtitle.value = !_showSubtitle.value
-        Log.d(TAG, "toggleSubtitle: ${_showSubtitle.value}")
+        sentencePlayer.toggleSubtitle()
     }
 
     fun setAutoNext(enabled: Boolean) {
-        Log.d(TAG, "setAutoNext: $enabled")
-        _playbackSettings.value = _playbackSettings.value.copy(autoNext = enabled)
-        sentencePlayer.setSettings(_playbackSettings.value)
+        val current = settings.value
+        sentencePlayer.updateSettings(current.copy(autoNext = enabled))
     }
 
     override fun onCleared() {
         super.onCleared()
-        Log.d(TAG, "onCleared - saving position")
-
         // 保存播放位置
         _currentAudioFile.value?.let { audioFile ->
+            val position = playerState.value.currentPosition
             viewModelScope.launch {
-                repository.updateLastPosition(audioFile.id, _currentPosition.value)
+                repository.updateLastPosition(audioFile.id, position)
             }
         }
-
-        audioPlayer.release()
+        sentencePlayer.release()
     }
 }
