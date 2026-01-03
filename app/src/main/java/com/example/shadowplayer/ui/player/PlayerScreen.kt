@@ -21,6 +21,8 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.shadowplayer.player.LrcSentence
 import com.example.shadowplayer.player.PlaybackSettings
+import androidx.compose.ui.platform.LocalContext // 确保有这个 import
+import com.example.shadowplayer.MainActivity // 确保引入 MainActivity
 
 @Composable
 fun PlayerScreen(
@@ -29,7 +31,21 @@ fun PlayerScreen(
     val playerState by viewModel.playerState.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val currentAudioFile by viewModel.currentAudioFile.collectAsState()
+// --- [新增代码 START] ---
+    val context = LocalContext.current
+    DisposableEffect(Unit) {
+        val activity = context as? MainActivity
+        // 绑定音量键事件：音量上 -> 上一句，音量下 -> 下一句
+        activity?.onVolumeUp = { viewModel.previousSentence() }
+        activity?.onVolumeDown = { viewModel.nextSentence() }
 
+        onDispose {
+            // 界面退出时清理引用，防止内存泄漏
+            activity?.onVolumeUp = null
+            activity?.onVolumeDown = null
+        }
+    }
+    // --- [新增代码 END] ---
     Column(
         modifier = Modifier
             .fillMaxSize()
