@@ -22,6 +22,7 @@ import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope // [新增]
 
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
@@ -170,10 +171,18 @@ class PlayerViewModel @Inject constructor(
         // 保存播放位置
         _currentAudioFile.value?.let { audioFile ->
             val position = playerState.value.currentPosition
-            viewModelScope.launch {
+
+            // --- [修改代码 START] ---
+            // 修改点1：使用独立的 Scope 启动协程，确保 ViewModel 销毁后数据库操作仍能完成
+            CoroutineScope(Dispatchers.IO).launch {
                 repository.updateLastPosition(audioFile.id, position)
             }
+            // --- [修改代码 END] ---
         }
-        sentencePlayer.release()
+
+        // --- [修改代码] ---
+        // 删除或注释掉下面这行！
+        // sentencePlayer.release()
+        // 原因：SentencePlayer 是 Singleton，销毁 ViewModel 不应连带销毁它，否则点击 Tab 后无法再播放
     }
 }
