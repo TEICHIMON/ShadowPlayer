@@ -12,12 +12,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
-import androidx.navigation.NavType // [新增]
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument // [新增]
+import androidx.navigation.navArgument
 import com.example.shadowplayer.ui.library.LibraryScreen
 import com.example.shadowplayer.ui.player.PlayerScreen
 import com.example.shadowplayer.ui.settings.SettingsScreen
@@ -52,12 +52,25 @@ fun AppNavigation() {
                             it.route?.startsWith(item.screen.route) == true
                         } == true,
                         onClick = {
-                            navController.navigate(item.screen.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
+                            // Library 是 startDestination，用 popBackStack 回到栈底
+                            // 避免 restoreState 恢复之前保存的 Player 子图状态
+                            if (item.screen == Screen.Library) {
+                                val popped = navController.popBackStack(
+                                    route = Screen.Library.route,
+                                    inclusive = false
+                                )
+                                // 如果 popBackStack 失败（已经在 Library），不做任何操作
+                                if (!popped) {
+                                    // 已经在 Library，无需操作
                                 }
-                                launchSingleTop = true
-                                restoreState = true
+                            } else {
+                                navController.navigate(item.screen.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
                             }
                         }
                     )

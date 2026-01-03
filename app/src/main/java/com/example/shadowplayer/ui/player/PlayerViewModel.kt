@@ -22,7 +22,6 @@ import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import javax.inject.Inject
-import kotlinx.coroutines.CoroutineScope // [新增]
 
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
@@ -59,19 +58,35 @@ class PlayerViewModel @Inject constructor(
             }
         } else {
             // 如果 audioId 为 -1，说明是直接点击 Tab 进来的
-            // 此时不需要做任何操作，显示之前的播放状态即可
-            Log.d(TAG, "No audioId passed, keeping current state")
+            // 尝试恢复上次播放的音频
+            restoreLastPlayedAudio()
+        }
+    }
+
+    /**
+     * 恢复上次播放的音频
+     */
+    private fun restoreLastPlayedAudio() {
+        val lastAudioId = sentencePlayer.getLastPlayedAudioId()
+        Log.d(TAG, "Restoring last played audio, id: $lastAudioId")
+
+        if (lastAudioId > 0) {
+            // 检查当前是否已经在播放这个文件
+            val currentId = _currentAudioFile.value?.id
+            if (currentId != lastAudioId) {
+                loadAudioById(lastAudioId)
+            }
+        } else {
+            Log.d(TAG, "No last played audio to restore")
         }
     }
 
     private fun loadAudioById(audioId: Long) {
         viewModelScope.launch {
             try {
-                // --- 修复点：使用正确的方法名 getAudioById ---
                 val audioFile = repository.getAudioById(audioId)
 
                 if (audioFile != null) {
-                    // 此时 audioFile 类型确认为 AudioFile，不再是 Any，消除了类型不匹配错误
                     loadAudio(audioFile)
                 } else {
                     Log.e(TAG, "AudioFile not found for id: $audioId")
@@ -86,8 +101,7 @@ class PlayerViewModel @Inject constructor(
         _currentAudioFile.value = audioFile
 
         viewModelScope.launch {
-            // 读取 LRC 内容
-            // 这里我们用 lrcPath 同时代表 lrc 或 srt 的路径
+            // 读取字幕内容
             val subtitlePath = audioFile.lrcPath
             val lrcContent = if (!subtitlePath.isNullOrEmpty()) {
                 readLrcContent(subtitlePath)
@@ -95,8 +109,8 @@ class PlayerViewModel @Inject constructor(
                 null
             }
 
-            // --- 修复点：调用 load 时传入 subtitlePath ---
-            sentencePlayer.load(audioFile.path, lrcContent, subtitlePath)
+            // 调用 load 时传入 audioId，用于保存播放位置
+            sentencePlayer.load(audioFile.path, lrcContent, subtitlePath, audioFile.id)
 
             // 恢复上次播放位置
             if (audioFile.lastPosition > 0) {
@@ -168,21 +182,7 @@ class PlayerViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        // 保存播放位置
-        _currentAudioFile.value?.let { audioFile ->
-            val position = playerState.value.currentPosition
-
-            // --- [修改代码 START] ---
-            // 修改点1：使用独立的 Scope 启动协程，确保 ViewModel 销毁后数据库操作仍能完成
-            CoroutineScope(Dispatchers.IO).launch {
-                repository.updateLastPosition(audioFile.id, position)
-            }
-            // --- [修改代码 END] ---
-        }
-
-        // --- [修改代码] ---
-        // 删除或注释掉下面这行！
-        // sentencePlayer.release()
-        // 原因：SentencePlayer 是 Singleton，销毁 ViewModel 不应连带销毁它，否则点击 Tab 后无法再播放
+        // 播放位置的保存已经在 SentencePlayer 中处理
+        // SentencePlayer 是 Singleton，不在这里释放
     }
 }

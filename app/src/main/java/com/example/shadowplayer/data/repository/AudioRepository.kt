@@ -28,6 +28,7 @@ class AudioRepository @Inject constructor(
     suspend fun incrementPlayCount(id: Long) = audioFileDao.incrementPlayCount(id)
     suspend fun updateFavorite(id: Long, isFavorite: Boolean) = audioFileDao.updateFavorite(id, isFavorite)
     suspend fun updateLrcOffset(id: Long, offset: Long) = audioFileDao.updateLrcOffset(id, offset)
+    suspend fun updateDuration(id: Long, duration: Long) = audioFileDao.updateDuration(id, duration)  // 新增
     suspend fun deleteAudio(audioFile: AudioFile) = audioFileDao.delete(audioFile)
 
     // Tags

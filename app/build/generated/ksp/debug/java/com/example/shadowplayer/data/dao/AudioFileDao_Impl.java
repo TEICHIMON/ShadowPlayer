@@ -49,6 +49,8 @@ public final class AudioFileDao_Impl implements AudioFileDao {
 
   private final SharedSQLiteStatement __preparedStmtOfUpdateLrcOffset;
 
+  private final SharedSQLiteStatement __preparedStmtOfUpdateDuration;
+
   private final SharedSQLiteStatement __preparedStmtOfDeleteByPath;
 
   public AudioFileDao_Impl(@NonNull final RoomDatabase __db) {
@@ -150,6 +152,14 @@ public final class AudioFileDao_Impl implements AudioFileDao {
       @NonNull
       public String createQuery() {
         final String _query = "UPDATE audio_files SET lrcOffset = ? WHERE id = ?";
+        return _query;
+      }
+    };
+    this.__preparedStmtOfUpdateDuration = new SharedSQLiteStatement(__db) {
+      @Override
+      @NonNull
+      public String createQuery() {
+        final String _query = "UPDATE audio_files SET duration = ? WHERE id = ?";
         return _query;
       }
     };
@@ -341,6 +351,34 @@ public final class AudioFileDao_Impl implements AudioFileDao {
           }
         } finally {
           __preparedStmtOfUpdateLrcOffset.release(_stmt);
+        }
+      }
+    }, $completion);
+  }
+
+  @Override
+  public Object updateDuration(final long id, final long duration,
+      final Continuation<? super Unit> $completion) {
+    return CoroutinesRoom.execute(__db, true, new Callable<Unit>() {
+      @Override
+      @NonNull
+      public Unit call() throws Exception {
+        final SupportSQLiteStatement _stmt = __preparedStmtOfUpdateDuration.acquire();
+        int _argIndex = 1;
+        _stmt.bindLong(_argIndex, duration);
+        _argIndex = 2;
+        _stmt.bindLong(_argIndex, id);
+        try {
+          __db.beginTransaction();
+          try {
+            _stmt.executeUpdateDelete();
+            __db.setTransactionSuccessful();
+            return Unit.INSTANCE;
+          } finally {
+            __db.endTransaction();
+          }
+        } finally {
+          __preparedStmtOfUpdateDuration.release(_stmt);
         }
       }
     }, $completion);
