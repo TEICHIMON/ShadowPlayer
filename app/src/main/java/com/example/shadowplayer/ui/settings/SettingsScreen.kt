@@ -10,10 +10,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.example.shadowplayer.player.PlaybackSettings
 
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(
+    viewModel: SettingsViewModel = hiltViewModel()
+) {
     val scrollState = rememberScrollState()
+    val settings by viewModel.settings.collectAsState()
+
+    // 弹出菜单状态
+    var showSpeedMenu by remember { mutableStateOf(false) }
+    var showRepeatMenu by remember { mutableStateOf(false) }
+    var showIntervalMenu by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -29,20 +39,85 @@ fun SettingsScreen() {
 
         // 播放设置
         SettingsSection(title = "播放设置") {
-            SettingsItem(
-                icon = Icons.Default.Speed,
-                title = "默认播放速度",
-                subtitle = "1.0x"
-            )
-            SettingsItem(
-                icon = Icons.Default.Repeat,
-                title = "默认重复次数",
-                subtitle = "1次"
-            )
-            SettingsItem(
-                icon = Icons.Default.Timer,
-                title = "默认跟读间隔",
-                subtitle = "2秒"
+            // 播放速度
+            Box {
+                SettingsItem(
+                    icon = Icons.Default.Speed,
+                    title = "默认播放速度",
+                    subtitle = "${settings.speed}x",
+                    onClick = { showSpeedMenu = true }
+                )
+                DropdownMenu(
+                    expanded = showSpeedMenu,
+                    onDismissRequest = { showSpeedMenu = false }
+                ) {
+                    PlaybackSettings.SPEED_OPTIONS.forEach { speed ->
+                        DropdownMenuItem(
+                            text = { Text("${speed}x") },
+                            onClick = {
+                                viewModel.setSpeed(speed)
+                                showSpeedMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            // 重复次数
+            Box {
+                SettingsItem(
+                    icon = Icons.Default.Repeat,
+                    title = "默认重复次数",
+                    subtitle = "${settings.repeatCount}次",
+                    onClick = { showRepeatMenu = true }
+                )
+                DropdownMenu(
+                    expanded = showRepeatMenu,
+                    onDismissRequest = { showRepeatMenu = false }
+                ) {
+                    PlaybackSettings.REPEAT_OPTIONS.forEach { count ->
+                        DropdownMenuItem(
+                            text = { Text("${count}次") },
+                            onClick = {
+                                viewModel.setRepeatCount(count)
+                                showRepeatMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            // 跟读间隔
+            Box {
+                SettingsItem(
+                    icon = Icons.Default.Timer,
+                    title = "默认跟读间隔",
+                    subtitle = "${settings.repeatInterval / 1000}秒",
+                    onClick = { showIntervalMenu = true }
+                )
+                DropdownMenu(
+                    expanded = showIntervalMenu,
+                    onDismissRequest = { showIntervalMenu = false }
+                ) {
+                    PlaybackSettings.INTERVAL_OPTIONS.forEach { interval ->
+                        DropdownMenuItem(
+                            text = { Text("${interval / 1000}秒") },
+                            onClick = {
+                                viewModel.setRepeatInterval(interval)
+                                showIntervalMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            // 自动播放下一句
+            SettingsToggleItem(
+                icon = Icons.Default.SkipNext,
+                title = "自动播放下一句",
+                subtitle = "播放完当前句后自动继续",
+                checked = settings.autoNext,
+                onCheckedChange = { viewModel.setAutoNext(it) }
             )
         }
 
@@ -50,34 +125,17 @@ fun SettingsScreen() {
 
         // 显示设置
         SettingsSection(title = "显示设置") {
-            var showSubtitle by remember { mutableStateOf(true) }
             SettingsToggleItem(
                 icon = Icons.Default.Subtitles,
                 title = "默认显示字幕",
-                checked = showSubtitle,
-                onCheckedChange = { showSubtitle = it }
+                checked = settings.showSubtitle,
+                onCheckedChange = { viewModel.toggleSubtitle() }
             )
-            var darkMode by remember { mutableStateOf(false) }
-            SettingsToggleItem(
+            // 深色模式暂时保持跟随系统，后续实现
+            SettingsItem(
                 icon = Icons.Default.DarkMode,
                 title = "深色模式",
-                subtitle = "跟随系统",
-                checked = darkMode,
-                onCheckedChange = { darkMode = it }
-            )
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // 音量键设置
-        SettingsSection(title = "音量键控制") {
-            var volumeKeyControl by remember { mutableStateOf(true) }
-            SettingsToggleItem(
-                icon = Icons.Default.VolumeUp,
-                title = "使用音量键切换句子",
-                subtitle = "音量+：上一句，音量-：下一句",
-                checked = volumeKeyControl,
-                onCheckedChange = { volumeKeyControl = it }
+                subtitle = "跟随系统"
             )
         }
 

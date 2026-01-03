@@ -1,7 +1,6 @@
 package com.example.shadowplayer.ui.library
 
 import android.content.Context
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
@@ -12,17 +11,26 @@ import com.example.shadowplayer.data.entity.Tag
 import com.example.shadowplayer.data.repository.AudioRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.io.File
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
 import javax.inject.Inject
 import android.util.Log
+import kotlinx.coroutines.Job
 
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
     private val repository: AudioRepository,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
+
+    companion object {
+        private const val TAG = "LibraryViewModel"
+        private const val BATCH_SIZE = 20  // 每批插入的文件数量
+    }
 
     val audioFiles: StateFlow<List<AudioFile>> = repository.getAllAudioFiles()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
@@ -52,6 +60,9 @@ class LibraryViewModel @Inject constructor(
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
+    // 用于取消扫描任务
+    private var scanJob: Job? = null
+
     /**
      * 添加扫描文件夹 (SAF Uri)
      */
@@ -78,23 +89,47 @@ class LibraryViewModel @Inject constructor(
     }
 
     /**
+     * 取消当前扫描任务
+     */
+    fun cancelScan() {
+        scanJob?.cancel()
+        scanJob = null
+        _isScanning.value = false
+    }
+
+    /**
      * 扫描指定文件夹
      */
     fun scanFolder(folder: ScanFolder) {
-        viewModelScope.launch {
+        // 取消之前的扫描任务
+        scanJob?.cancel()
+
+        scanJob = viewModelScope.launch {
             _isScanning.value = true
             try {
-                val uri = Uri.parse(folder.path)
-                val docFile = DocumentFile.fromTreeUri(context, uri)
-                val audioFiles = mutableListOf<AudioFile>()
+                withContext(Dispatchers.IO) {
+                    val uri = Uri.parse(folder.path)
+                    val docFile = DocumentFile.fromTreeUri(context, uri)
+                    val audioFiles = mutableListOf<AudioFile>()
 
-                docFile?.let { scanDirectory(it, audioFiles) }
+                    docFile?.let {
+                        scanDirectory(it, audioFiles) { batch ->
+                            // 分批插入数据库
+                            if (batch.isNotEmpty()) {
+                                repository.insertAllAudio(batch)
+                                Log.d(TAG, "Inserted batch of ${batch.size} files")
+                            }
+                        }
+                    }
 
-                if (audioFiles.isNotEmpty()) {
-                    repository.insertAllAudio(audioFiles)
+                    // 插入剩余的文件
+                    if (audioFiles.isNotEmpty()) {
+                        repository.insertAllAudio(audioFiles)
+                        Log.d(TAG, "Inserted final batch of ${audioFiles.size} files")
+                    }
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e(TAG, "Error scanning folder", e)
             } finally {
                 _isScanning.value = false
             }
@@ -105,21 +140,70 @@ class LibraryViewModel @Inject constructor(
      * 扫描所有文件夹
      */
     fun scanAllFolders() {
-        viewModelScope.launch {
-            scanFolders.value.forEach { folder ->
-                scanFolder(folder)
+        // 取消之前的扫描任务
+        scanJob?.cancel()
+
+        scanJob = viewModelScope.launch {
+            _isScanning.value = true
+            try {
+                withContext(Dispatchers.IO) {
+                    scanFolders.value.forEach { folder ->
+                        if (!isActive) return@withContext  // 检查是否被取消
+
+                        val uri = Uri.parse(folder.path)
+                        val docFile = DocumentFile.fromTreeUri(context, uri)
+                        val audioFiles = mutableListOf<AudioFile>()
+
+                        docFile?.let {
+                            scanDirectory(it, audioFiles) { batch ->
+                                if (batch.isNotEmpty()) {
+                                    repository.insertAllAudio(batch)
+                                    Log.d(TAG, "Inserted batch of ${batch.size} files")
+                                }
+                            }
+                        }
+
+                        if (audioFiles.isNotEmpty()) {
+                            repository.insertAllAudio(audioFiles)
+                            Log.d(TAG, "Inserted final batch of ${audioFiles.size} files")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error scanning all folders", e)
+            } finally {
+                _isScanning.value = false
             }
         }
     }
 
-    private fun scanDirectory(directory: DocumentFile, results: MutableList<AudioFile>) {
+    /**
+     * 递归扫描目录，分批插入
+     */
+    private suspend fun scanDirectory(
+        directory: DocumentFile,
+        results: MutableList<AudioFile>,
+        onBatchReady: suspend (List<AudioFile>) -> Unit
+    ) {
+        // 检查协程是否被取消
+        if (!currentCoroutineContext().isActive) return
+
         directory.listFiles().forEach { file ->
+            // 再次检查是否被取消
+            if (!currentCoroutineContext().isActive) return
+
             if (file.isDirectory) {
-                scanDirectory(file, results)
+                scanDirectory(file, results, onBatchReady)
             } else if (isAudioFile(file.name ?: "")) {
                 val audioFile = createAudioFile(file)
                 if (audioFile != null) {
                     results.add(audioFile)
+
+                    // 达到批次大小时插入数据库
+                    if (results.size >= BATCH_SIZE) {
+                        onBatchReady(results.toList())
+                        results.clear()
+                    }
                 }
             }
         }
@@ -130,43 +214,51 @@ class LibraryViewModel @Inject constructor(
         return extensions.any { name.lowercase().endsWith(it) }
     }
 
+    private fun isSubtitleFile(name: String): Boolean {
+        val extensions = listOf(".lrc", ".srt")
+        return extensions.any { name.lowercase().endsWith(it) }
+    }
+
+    /**
+     * 创建 AudioFile 对象
+     * 注意：不再获取 duration，设为 0，播放时由 ExoPlayer 获取
+     */
     private fun createAudioFile(file: DocumentFile): AudioFile? {
         val uri = file.uri
         val name = file.name ?: return null
 
-        Log.d("LibraryViewModel", "Creating audio file: $name, URI: $uri")
+        Log.d(TAG, "Creating audio file: $name, URI: $uri")
 
-        // 获取时长
-        val duration = try {
-            val retriever = MediaMetadataRetriever()
-            retriever.setDataSource(context, uri)
-            val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-            retriever.release()
-            durationStr?.toLongOrNull() ?: 0
-        } catch (e: Exception) {
-            0L
-        }
+        // 不再使用 MediaMetadataRetriever 获取时长
+        // 时长将在播放时由 ExoPlayer 获取并更新
 
-        // 查找对应的 LRC 文件
-        val lrcPath = findLrcFile(file)
+        // 查找对应的字幕文件 (LRC 或 SRT)
+        val subtitlePath = findSubtitleFile(file)
 
         return AudioFile(
             path = uri.toString(),
             title = name.substringBeforeLast("."),
-            duration = duration,
-            lrcPath = lrcPath
+            duration = 0,  // 延迟获取，播放时更新
+            lrcPath = subtitlePath
         )
     }
 
-    private fun findLrcFile(audioFile: DocumentFile): String? {
+    /**
+     * 查找对应的字幕文件（支持 LRC 和 SRT）
+     */
+    private fun findSubtitleFile(audioFile: DocumentFile): String? {
         val parent = audioFile.parentFile ?: return null
         val baseName = audioFile.name?.substringBeforeLast(".") ?: return null
 
-        // 查找同名的 .lrc 文件
+        // 优先查找 LRC，其次 SRT
+        val subtitleExtensions = listOf(".lrc", ".srt")
+
         parent.listFiles().forEach { file ->
             val fileName = file.name ?: return@forEach
-            if (fileName.equals("$baseName.lrc", ignoreCase = true)) {
-                return file.uri.toString()
+            for (ext in subtitleExtensions) {
+                if (fileName.equals("$baseName$ext", ignoreCase = true)) {
+                    return file.uri.toString()
+                }
             }
         }
         return null
@@ -223,5 +315,10 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             repository.updateFavorite(audioFile.id, !audioFile.isFavorite)
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        scanJob?.cancel()
     }
 }

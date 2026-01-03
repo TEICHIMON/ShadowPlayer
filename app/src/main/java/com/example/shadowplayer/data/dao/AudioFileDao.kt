@@ -39,6 +39,10 @@ interface AudioFileDao {
     @Query("UPDATE audio_files SET lrcOffset = :offset WHERE id = :id")
     suspend fun updateLrcOffset(id: Long, offset: Long)
 
+    // 新增：更新音频时长
+    @Query("UPDATE audio_files SET duration = :duration WHERE id = :id")
+    suspend fun updateDuration(id: Long, duration: Long)
+
     @Delete
     suspend fun delete(audioFile: AudioFile)
 
