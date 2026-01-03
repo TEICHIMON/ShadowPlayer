@@ -1,10 +1,10 @@
 package com.example.shadowplayer.ui.library
 
-import android.app.Activity
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -15,7 +15,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -97,14 +99,16 @@ fun LibraryScreen(
                 AudioFileList(
                     audioFiles = audioFiles,
                     onFileClick = onFileSelected,
-                    onFavoriteClick = { viewModel.toggleFavorite(it) }
+                    onFavoriteClick = { viewModel.toggleFavorite(it) },
+                    onDeleteClick = { viewModel.deleteAudio(it) } // 传入删除回调
                 )
             }
             LibraryTab.FAVORITES -> {
                 AudioFileList(
                     audioFiles = favorites,
                     onFileClick = onFileSelected,
-                    onFavoriteClick = { viewModel.toggleFavorite(it) }
+                    onFavoriteClick = { viewModel.toggleFavorite(it) },
+                    onDeleteClick = null // 收藏夹一般不直接删除文件记录，或者你可以选择加上
                 )
             }
             LibraryTab.TAGS -> {
@@ -147,7 +151,8 @@ fun LibraryScreen(
 fun AudioFileList(
     audioFiles: List<AudioFile>,
     onFileClick: (AudioFile) -> Unit,
-    onFavoriteClick: (AudioFile) -> Unit
+    onFavoriteClick: (AudioFile) -> Unit,
+    onDeleteClick: ((AudioFile) -> Unit)? = null // 新增删除回调参数
 ) {
     if (audioFiles.isEmpty()) {
         Box(
@@ -169,70 +174,134 @@ fun AudioFileList(
                 AudioFileItem(
                     audioFile = audioFile,
                     onClick = { onFileClick(audioFile) },
-                    onFavoriteClick = { onFavoriteClick(audioFile) }
+                    onFavoriteClick = { onFavoriteClick(audioFile) },
+                    onDeleteClick = onDeleteClick
                 )
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AudioFileItem(
     audioFile: AudioFile,
     onClick: () -> Unit,
-    onFavoriteClick: () -> Unit
+    onFavoriteClick: () -> Unit,
+    onDeleteClick: ((AudioFile) -> Unit)?
 ) {
+    var showMenu by remember { mutableStateOf(false) }
+    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Default.AudioFile,
-                contentDescription = null,
-                modifier = Modifier.size(40.dp),
-                tint = MaterialTheme.colorScheme.primary
+            // 使用 combinedClickable 实现长按
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    showMenu = true
+                }
             )
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = audioFile.title,
-                    style = MaterialTheme.typography.bodyLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+    ) {
+        Box {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AudioFile,
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp),
+                    tint = MaterialTheme.colorScheme.primary
                 )
-                Row {
-                    if (audioFile.lrcPath != null) {
-                        Text(
-                            text = "有字幕",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }
-                    if (audioFile.playCount > 0) {
-                        Text(
-                            text = "播放${audioFile.playCount}次",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = audioFile.title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Row {
+                        if (audioFile.lrcPath != null) {
+                            Text(
+                                text = "有字幕",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                        if (audioFile.playCount > 0) {
+                            Text(
+                                text = "播放${audioFile.playCount}次",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
+                IconButton(onClick = onFavoriteClick) {
+                    Icon(
+                        imageVector = if (audioFile.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = "收藏",
+                        tint = if (audioFile.isFavorite) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-            IconButton(onClick = onFavoriteClick) {
-                Icon(
-                    imageVector = if (audioFile.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                    contentDescription = "收藏",
-                    tint = if (audioFile.isFavorite) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                )
+
+            // 长按菜单
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false }
+            ) {
+                if (onDeleteClick != null) {
+                    DropdownMenuItem(
+                        text = { Text("删除记录") },
+                        onClick = {
+                            showMenu = false
+                            showDeleteConfirmDialog = true
+                        },
+                        leadingIcon = {
+                            Icon(Icons.Default.Delete, contentDescription = null)
+                        }
+                    )
+                } else {
+                    DropdownMenuItem(
+                        text = { Text("暂无操作") },
+                        onClick = { showMenu = false }
+                    )
+                }
             }
         }
+    }
+
+    // 删除确认对话框
+    if (showDeleteConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmDialog = false },
+            title = { Text("确认删除") },
+            text = { Text("确定要从列表中移除音频 \"${audioFile.title}\" 吗？\n（这不会删除本地源文件）") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteClick?.invoke(audioFile)
+                        showDeleteConfirmDialog = false
+                    }
+                ) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirmDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 
