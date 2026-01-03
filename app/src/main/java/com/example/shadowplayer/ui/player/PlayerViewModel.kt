@@ -86,14 +86,16 @@ class PlayerViewModel @Inject constructor(
 
         viewModelScope.launch {
             // 读取 LRC 内容
-            val lrcContent = if (!audioFile.lrcPath.isNullOrEmpty()) {
-                readLrcContent(audioFile.lrcPath!!)
+            // 这里我们用 lrcPath 同时代表 lrc 或 srt 的路径
+            val subtitlePath = audioFile.lrcPath
+            val lrcContent = if (!subtitlePath.isNullOrEmpty()) {
+                readLrcContent(subtitlePath)
             } else {
                 null
             }
 
-            // 调用 SentencePlayer 加载音频和字幕
-            sentencePlayer.load(audioFile.path, lrcContent)
+            // --- 修复点：调用 load 时传入 subtitlePath ---
+            sentencePlayer.load(audioFile.path, lrcContent, subtitlePath)
 
             // 恢复上次播放位置
             if (audioFile.lastPosition > 0) {

@@ -4,12 +4,10 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * 分句播放器 - 控制分句重复、跟读间隔等核心逻辑
- */
 @Singleton
 class SentencePlayer @Inject constructor(
     private val audioPlayer: AudioPlayer
@@ -25,25 +23,47 @@ class SentencePlayer @Inject constructor(
     private var positionUpdateJob: Job? = null
     private var intervalJob: Job? = null
 
+    // 暂存字幕内容和类型，用于在获取到时长后重新处理(LRC)
+    private var pendingLrcContent: String? = null
+    private var pendingSubtitleType: String? = null
+
     init {
         // 监听播放位置变化
         audioPlayer.onPositionChanged = { position ->
             checkSentenceEnd(position)
         }
+
+        // --- 修复点1：监听 Duration 变化，解决时长显示为0的问题 ---
+        scope.launch {
+            audioPlayer.duration.collectLatest { duration ->
+                if (duration > 0) {
+                    _state.value = _state.value.copy(totalDuration = duration)
+                    // 时长更新后，修正最后一句字幕的结束时间
+                    updateLastSentenceDuration(duration)
+                }
+            }
+        }
     }
 
     /**
      * 加载音频和字幕
+     * @param subtitlePath 用于判断是 lrc 还是 srt
      */
-    fun load(audioPath: String, lrcContent: String?, lrcOffset: Long = 0) {
+    fun load(audioPath: String, lrcContent: String?, subtitlePath: String? = null) {
+        // 重置状态
+        _state.value = SentencePlayerState()
+        pendingLrcContent = lrcContent
+        pendingSubtitleType = subtitlePath?.substringAfterLast('.', "")?.lowercase()
+
         audioPlayer.loadAudio(audioPath)
 
+        // --- 修复点：移除 delay(500)，直接解析 ---
         scope.launch {
-            delay(500) // 等待 ExoPlayer 准备
-            val duration = audioPlayer.getDuration()
+            val initialDuration = audioPlayer.getDuration()
+            val finalDuration = if (initialDuration > 0) initialDuration else 0L
 
             val sentences = if (lrcContent != null) {
-                LrcParser.parse(lrcContent, duration, lrcOffset)
+                parseSubtitle(lrcContent, pendingSubtitleType ?: "lrc", finalDuration)
             } else {
                 emptyList()
             }
@@ -52,27 +72,41 @@ class SentencePlayer @Inject constructor(
                 sentences = sentences,
                 currentIndex = 0,
                 currentRepeat = 1,
-                totalDuration = duration,
+                totalDuration = finalDuration,
                 isPlaying = false,
                 isInInterval = false
             )
         }
     }
 
-    /**
-     * 播放/暂停切换
-     */
-    fun togglePlayPause() {
-        if (_state.value.isPlaying) {
-            pause()
-        } else {
-            play()
+    // 根据类型选择解析器
+    private fun parseSubtitle(content: String, type: String, duration: Long): List<LrcSentence> {
+        return when (type) {
+            "srt" -> SrtParser.parse(content) // 调用新的 SRT 解析器
+            else -> LrcParser.parse(content, duration) // 默认 LRC
         }
     }
 
-    /**
-     * 播放
-     */
+    // 修正最后一句的时间（针对LRC依赖总时长的情况）
+    private fun updateLastSentenceDuration(duration: Long) {
+        val currentSentences = _state.value.sentences
+        // SRT 自带结束时间，通常不需要用总时长修正，除非你需要强制对齐
+        if (currentSentences.isNotEmpty() && pendingSubtitleType != "srt") {
+            val last = currentSentences.last()
+            if (last.endTime <= last.startTime || last.endTime == 0L) {
+                val newLast = last.copy(endTime = duration)
+                val newSentences = currentSentences.toMutableList().apply {
+                    set(lastIndex, newLast)
+                }
+                _state.value = _state.value.copy(sentences = newSentences)
+            }
+        }
+    }
+
+    fun togglePlayPause() {
+        if (_state.value.isPlaying) pause() else play()
+    }
+
     fun play() {
         cancelInterval()
         audioPlayer.setSpeed(_settings.value.speed)
@@ -81,9 +115,6 @@ class SentencePlayer @Inject constructor(
         startPositionUpdate()
     }
 
-    /**
-     * 暂停
-     */
     fun pause() {
         audioPlayer.pause()
         _state.value = _state.value.copy(isPlaying = false)
@@ -91,9 +122,6 @@ class SentencePlayer @Inject constructor(
         cancelInterval()
     }
 
-    /**
-     * 跳转到指定句子
-     */
     fun seekToSentence(index: Int) {
         val sentences = _state.value.sentences
         if (index < 0 || index >= sentences.size) return
@@ -113,26 +141,14 @@ class SentencePlayer @Inject constructor(
         }
     }
 
-    /**
-     * 上一句
-     */
     fun previousSentence() {
-        val currentIndex = _state.value.currentIndex
-        seekToSentence(maxOf(0, currentIndex - 1))
+        seekToSentence(maxOf(0, _state.value.currentIndex - 1))
     }
 
-    /**
-     * 下一句
-     */
     fun nextSentence() {
-        val currentIndex = _state.value.currentIndex
-        val maxIndex = _state.value.sentences.size - 1
-        seekToSentence(minOf(maxIndex, currentIndex + 1))
+        seekToSentence(minOf(_state.value.sentences.size - 1, _state.value.currentIndex + 1))
     }
 
-    /**
-     * 跳转到指定位置
-     */
     fun seekTo(position: Long) {
         audioPlayer.seekTo(position)
         val newIndex = LrcParser.findSentenceIndex(_state.value.sentences, position)
@@ -143,39 +159,24 @@ class SentencePlayer @Inject constructor(
         )
     }
 
-    /**
-     * 更新播放设置
-     */
     fun updateSettings(settings: PlaybackSettings) {
         _settings.value = settings
         audioPlayer.setSpeed(settings.speed)
     }
 
-    /**
-     * 更新播放速度
-     */
     fun setSpeed(speed: Float) {
         _settings.value = _settings.value.copy(speed = speed)
         audioPlayer.setSpeed(speed)
     }
 
-    /**
-     * 更新重复次数
-     */
     fun setRepeatCount(count: Int) {
         _settings.value = _settings.value.copy(repeatCount = count)
     }
 
-    /**
-     * 更新跟读间隔
-     */
     fun setRepeatInterval(interval: Long) {
         _settings.value = _settings.value.copy(repeatInterval = interval)
     }
 
-    /**
-     * 切换字幕显示
-     */
     fun toggleSubtitle() {
         _settings.value = _settings.value.copy(showSubtitle = !_settings.value.showSubtitle)
     }
@@ -185,31 +186,28 @@ class SentencePlayer @Inject constructor(
      */
     private fun checkSentenceEnd(position: Long) {
         val state = _state.value
-        val settings = _settings.value
+
+        // --- 修复点2：防抖动逻辑 ---
+        // 如果正在间隔倒计时中，直接返回，不再检查结束时间，防止多次触发 handleSentenceEnd 导致逻辑混乱
+        if (state.isInInterval) return
+
         val currentSentence = state.currentSentence ?: return
 
         _state.value = state.copy(currentPosition = position)
 
-        // 检查是否到达当前句子结束时间
         if (position >= currentSentence.endTime) {
             handleSentenceEnd()
         }
     }
 
-    /**
-     * 处理句子结束
-     */
     private fun handleSentenceEnd() {
         val state = _state.value
         val settings = _settings.value
 
         if (state.currentRepeat < settings.repeatCount) {
-            // 需要重复，进入跟读间隔
             startInterval()
         } else {
-            // 重复完成，播放下一句
             if (settings.autoNext && state.currentIndex < state.sentences.size - 1) {
-                // 如果有跟读间隔，先进入间隔
                 if (settings.repeatInterval > 0) {
                     startIntervalForNext()
                 } else {
@@ -221,13 +219,9 @@ class SentencePlayer @Inject constructor(
         }
     }
 
-    /**
-     * 开始跟读间隔（重复当前句）
-     */
     private fun startInterval() {
         val settings = _settings.value
         if (settings.repeatInterval <= 0) {
-            // 无间隔，直接重复
             repeatCurrentSentence()
             return
         }
@@ -241,20 +235,19 @@ class SentencePlayer @Inject constructor(
         intervalJob = scope.launch {
             val totalSeconds = (settings.repeatInterval / 1000).toInt()
             for (i in totalSeconds downTo 1) {
+                if (!isActive) break
                 _state.value = _state.value.copy(intervalCountdown = i)
                 delay(1000)
             }
-            _state.value = _state.value.copy(isInInterval = false, intervalCountdown = 0)
-            repeatCurrentSentence()
+            if (isActive) {
+                _state.value = _state.value.copy(isInInterval = false, intervalCountdown = 0)
+                repeatCurrentSentence()
+            }
         }
     }
 
-    /**
-     * 开始跟读间隔（进入下一句前）
-     */
     private fun startIntervalForNext() {
         val settings = _settings.value
-
         audioPlayer.pause()
         _state.value = _state.value.copy(
             isInInterval = true,
@@ -264,41 +257,34 @@ class SentencePlayer @Inject constructor(
         intervalJob = scope.launch {
             val totalSeconds = (settings.repeatInterval / 1000).toInt()
             for (i in totalSeconds downTo 1) {
+                if (!isActive) break
                 _state.value = _state.value.copy(intervalCountdown = i)
                 delay(1000)
             }
-            _state.value = _state.value.copy(isInInterval = false, intervalCountdown = 0)
-            // 重置重复计数，进入下一句
-            _state.value = _state.value.copy(currentRepeat = 1)
-            nextSentence()
-            play()
+            if (isActive) {
+                _state.value = _state.value.copy(isInInterval = false, intervalCountdown = 0, currentRepeat = 1)
+                nextSentence()
+                play()
+            }
         }
     }
 
-    /**
-     * 重复播放当前句
-     */
     private fun repeatCurrentSentence() {
         val state = _state.value
         val sentence = state.currentSentence ?: return
 
-        _state.value = state.copy(currentRepeat = state.currentRepeat + 1)
+        _state.value = state.copy(currentRepeat = state.currentRepeat + 1, isInInterval = false)
         audioPlayer.seekTo(sentence.startTime)
         audioPlayer.play()
+        startPositionUpdate()
     }
 
-    /**
-     * 取消间隔
-     */
     private fun cancelInterval() {
         intervalJob?.cancel()
         intervalJob = null
         _state.value = _state.value.copy(isInInterval = false, intervalCountdown = 0)
     }
 
-    /**
-     * 开始位置更新
-     */
     private fun startPositionUpdate() {
         positionUpdateJob?.cancel()
         positionUpdateJob = scope.launch {
@@ -309,17 +295,11 @@ class SentencePlayer @Inject constructor(
         }
     }
 
-    /**
-     * 停止位置更新
-     */
     private fun stopPositionUpdate() {
         positionUpdateJob?.cancel()
         positionUpdateJob = null
     }
 
-    /**
-     * 释放资源
-     */
     fun release() {
         scope.cancel()
         audioPlayer.release()
