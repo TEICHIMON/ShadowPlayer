@@ -14,15 +14,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.example.shadowplayer.MainActivity
 import com.example.shadowplayer.player.LrcSentence
 import com.example.shadowplayer.player.PlaybackSettings
-import androidx.compose.ui.platform.LocalContext // 确保有这个 import
-import com.example.shadowplayer.MainActivity // 确保引入 MainActivity
+import com.example.shadowplayer.player.LrcParser
 
 @Composable
 fun PlayerScreen(
@@ -31,21 +32,40 @@ fun PlayerScreen(
     val playerState by viewModel.playerState.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val currentAudioFile by viewModel.currentAudioFile.collectAsState()
-// --- [新增代码 START] ---
+
+    // --- [新增状态：UI 交互层面的拖拽状态] ---
+    var isDragging by remember { mutableStateOf(false) }
+    var dragPosition by remember { mutableLongStateOf(0L) }
+
+    // --- [逻辑：计算用于显示的“当前时间”和“高亮索引”] ---
+    // 如果正在拖拽，显示拖拽的时间；否则显示播放器真实时间
+    val displayPosition = if (isDragging) dragPosition else playerState.currentPosition
+
+    // 计算应该高亮哪一句字幕
+    // 如果正在拖拽，根据 dragPosition 在 sentences 中查找；否则直接用播放器的 currentIndex
+    val targetIndex = if (isDragging) {
+        if (playerState.sentences.isNotEmpty()) {
+            LrcParser.findSentenceIndex(playerState.sentences, dragPosition)
+        } else {
+            -1
+        }
+    } else {
+        playerState.currentIndex
+    }
+
+    // 绑定物理按键
     val context = LocalContext.current
     DisposableEffect(Unit) {
         val activity = context as? MainActivity
-        // 绑定音量键事件：音量上 -> 上一句，音量下 -> 下一句
         activity?.onVolumeUp = { viewModel.previousSentence() }
         activity?.onVolumeDown = { viewModel.nextSentence() }
 
         onDispose {
-            // 界面退出时清理引用，防止内存泄漏
             activity?.onVolumeUp = null
             activity?.onVolumeDown = null
         }
     }
-    // --- [新增代码 END] ---
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -65,7 +85,7 @@ fun PlayerScreen(
         if (settings.showSubtitle && playerState.sentences.isNotEmpty()) {
             SubtitleList(
                 sentences = playerState.sentences,
-                currentIndex = playerState.currentIndex,
+                currentIndex = targetIndex, // 传入计算后的索引，实现拖拽时的预览高亮
                 onSentenceClick = { index ->
                     viewModel.seekToSentence(index)
                 },
@@ -81,9 +101,14 @@ fun PlayerScreen(
                     .fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
-                if (playerState.currentSentence != null && settings.showSubtitle) {
+                // 这里也使用 targetIndex 来显示拖拽时的预览文本
+                val currentText = if (targetIndex in playerState.sentences.indices) {
+                    playerState.sentences[targetIndex].text
+                } else null
+
+                if (currentText != null && settings.showSubtitle) {
                     Text(
-                        text = playerState.currentSentence!!.text,
+                        text = currentText,
                         style = MaterialTheme.typography.headlineSmall,
                         textAlign = TextAlign.Center
                     )
@@ -120,9 +145,16 @@ fun PlayerScreen(
 
         // 进度条
         ProgressSection(
-            currentPosition = playerState.currentPosition,
+            currentPosition = displayPosition, // 传入用于显示的时间（包含拖拽预览）
             totalDuration = playerState.totalDuration,
-            onSeek = { viewModel.seekTo(it) }
+            onSeek = { position ->
+                viewModel.seekTo(position)
+                isDragging = false // 松手后结束拖拽状态
+            },
+            onPreview = { position ->
+                isDragging = true // 开始拖拽
+                dragPosition = position // 更新拖拽位置
+            }
         )
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -158,7 +190,7 @@ fun SubtitleList(
 ) {
     val listState = rememberLazyListState()
 
-    // 自动滚动到当前句
+    // 自动滚动到当前句 (无论是播放还是拖拽预览)
     LaunchedEffect(currentIndex) {
         if (currentIndex >= 0 && currentIndex < sentences.size) {
             listState.animateScrollToItem(
@@ -211,27 +243,29 @@ fun SubtitleList(
 fun ProgressSection(
     currentPosition: Long,
     totalDuration: Long,
-    onSeek: (Long) -> Unit
+    onSeek: (Long) -> Unit,
+    onPreview: (Long) -> Unit // 新增：拖拽过程中的回调
 ) {
-    var sliderPosition by remember { mutableFloatStateOf(0f) }
-    var isDragging by remember { mutableStateOf(false) }
-
-    val progress = if (totalDuration > 0 && !isDragging) {
+    // 进度比例计算
+    val progress = if (totalDuration > 0) {
         currentPosition.toFloat() / totalDuration
     } else {
-        sliderPosition
+        0f
     }
 
     Column {
         Slider(
             value = progress,
             onValueChange = { value ->
-                isDragging = true
-                sliderPosition = value
+                // 实时计算拖拽到的时间点，并通过 onPreview 回传
+                val previewTime = (value * totalDuration).toLong()
+                onPreview(previewTime)
             },
             onValueChangeFinished = {
-                onSeek((sliderPosition * totalDuration).toLong())
-                isDragging = false
+                // 松手时，执行真正的 seek
+                // 注意：这里我们不需要再计算时间，因为 PlayerScreen 已经有了 dragPosition
+                // 但为了接口清晰，我们还是重新传递一次当前显示的时间作为 seek 目标
+                onSeek(currentPosition)
             },
             modifier = Modifier.fillMaxWidth()
         )
@@ -387,9 +421,16 @@ fun SettingsBar(
     }
 }
 
+// 优化后的时间格式化，支持小时显示
 fun formatTime(ms: Long): String {
     val totalSeconds = ms / 1000
-    val minutes = totalSeconds / 60
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
     val seconds = totalSeconds % 60
-    return "%d:%02d".format(minutes, seconds)
+
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%d:%02d".format(minutes, seconds)
+    }
 }
