@@ -12,10 +12,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType // [新增]
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument // [新增]
 import com.example.shadowplayer.ui.library.LibraryScreen
 import com.example.shadowplayer.ui.player.PlayerScreen
 import com.example.shadowplayer.ui.settings.SettingsScreen
@@ -46,7 +48,8 @@ fun AppNavigation() {
                         icon = { Icon(item.icon, contentDescription = item.label) },
                         label = { Text(item.label) },
                         selected = currentDestination?.hierarchy?.any {
-                            it.route == item.screen.route
+                            // 注意：这里用 route 前缀匹配，因为 Player 现在可能带有参数
+                            it.route?.startsWith(item.screen.route) == true
                         } == true,
                         onClick = {
                             navController.navigate(item.screen.route) {
@@ -67,17 +70,28 @@ fun AppNavigation() {
             startDestination = Screen.Library.route,
             modifier = Modifier.padding(innerPadding)
         ) {
-            composable(Screen.Player.route) {
+            // 1. 修改播放器路由：添加可选参数 ?audioId={audioId}
+            composable(
+                route = "${Screen.Player.route}?audioId={audioId}",
+                arguments = listOf(
+                    navArgument("audioId") {
+                        type = NavType.LongType
+                        defaultValue = -1L // 默认值 -1，表示没有通过列表选择，直接点击Tab进来的
+                    }
+                )
+            ) {
                 PlayerScreen()
             }
+
             composable(Screen.Library.route) {
                 LibraryScreen(
                     onFileSelected = { audioFile ->
-                        // 导航到播放器并传递文件
-                        navController.navigate(Screen.Player.route)
+                        // 2. 传递参数：将文件 ID 拼接到路由中
+                        navController.navigate("${Screen.Player.route}?audioId=${audioFile.id}")
                     }
                 )
             }
+
             composable(Screen.Settings.route) {
                 SettingsScreen()
             }
