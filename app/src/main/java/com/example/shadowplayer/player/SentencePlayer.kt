@@ -15,11 +15,11 @@ import javax.inject.Singleton
 class SentencePlayer @Inject constructor(
     private val audioPlayer: AudioPlayer,
     private val prefs: SharedPreferences,
-    private val repository: AudioRepository  // 新增：注入 Repository
+    private val repository: AudioRepository
 ) {
     companion object {
         private const val KEY_LAST_PLAYED_AUDIO_ID = "last_played_audio_id"
-        private const val POSITION_SAVE_INTERVAL_MS = 10000L  // 每10秒保存一次位置
+        private const val POSITION_SAVE_INTERVAL_MS = 10000L
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -32,33 +32,26 @@ class SentencePlayer @Inject constructor(
 
     private var positionUpdateJob: Job? = null
     private var intervalJob: Job? = null
-    private var positionSaveJob: Job? = null  // 新增：定时保存位置的 Job
+    private var positionSaveJob: Job? = null
 
-    // 暂存字幕内容和类型，用于在获取到时长后重新处理(LRC)
     private var pendingLrcContent: String? = null
     private var pendingSubtitleType: String? = null
 
-    // 新增：当前播放的音频 ID
     private var currentAudioId: Long = -1L
 
     init {
-        // 初始化时加载保存的设置
         loadSettings()
 
-        // 监听播放位置变化
         audioPlayer.onPositionChanged = { position ->
             checkSentenceEnd(position)
         }
 
-        // 监听 Duration 变化，解决时长显示为0的问题
         scope.launch {
             audioPlayer.duration.collectLatest { duration ->
                 if (duration > 0) {
                     _state.value = _state.value.copy(totalDuration = duration)
-                    // 时长更新后，修正最后一句字幕的结束时间
                     updateLastSentenceDuration(duration)
 
-                    // 新增：更新数据库中的时长
                     if (currentAudioId > 0) {
                         launch(Dispatchers.IO) {
                             repository.updateDuration(currentAudioId, duration)
@@ -69,19 +62,22 @@ class SentencePlayer @Inject constructor(
         }
     }
 
-    /**
-     * 获取上次播放的音频 ID
-     */
     fun getLastPlayedAudioId(): Long {
         return prefs.getLong(KEY_LAST_PLAYED_AUDIO_ID, -1L)
     }
 
     /**
-     * 加载音频和字幕
+     * 加载音频和字幕 (修改：增加 initialPosition 参数)
      * @param audioId 音频文件 ID，用于保存播放位置
-     * @param subtitlePath 用于判断是 lrc 还是 srt
+     * @param initialPosition 初始播放位置，默认为 0
      */
-    fun load(audioPath: String, lrcContent: String?, subtitlePath: String? = null, audioId: Long = -1L) {
+    fun load(
+        audioPath: String,
+        lrcContent: String?,
+        subtitlePath: String? = null,
+        audioId: Long = -1L,
+        initialPosition: Long = 0L // [修改] 新增参数
+    ) {
         // 保存之前的播放位置
         saveCurrentPosition()
 
@@ -90,13 +86,18 @@ class SentencePlayer @Inject constructor(
         pendingLrcContent = lrcContent
         pendingSubtitleType = subtitlePath?.substringAfterLast('.', "")?.lowercase()
 
-        // 更新当前音频 ID 并保存到 SharedPreferences
         currentAudioId = audioId
         if (audioId > 0) {
             prefs.edit { putLong(KEY_LAST_PLAYED_AUDIO_ID, audioId) }
         }
 
+        // 加载音频
         audioPlayer.loadAudio(audioPath)
+
+        // [修改] 立即恢复播放器时间，不再依赖外部调用 seekTo
+        if (initialPosition > 0) {
+            audioPlayer.seekTo(initialPosition)
+        }
 
         scope.launch {
             val initialDuration = audioPlayer.getDuration()
@@ -108,9 +109,17 @@ class SentencePlayer @Inject constructor(
                 emptyList()
             }
 
+            // [修改] 根据 initialPosition 计算正确的初始索引
+            val startIndex = if (sentences.isNotEmpty() && initialPosition > 0) {
+                LrcParser.findSentenceIndex(sentences, initialPosition)
+            } else {
+                0
+            }
+
             _state.value = _state.value.copy(
                 sentences = sentences,
-                currentIndex = 0,
+                currentIndex = startIndex, // [修改] 使用计算出的索引
+                currentPosition = initialPosition, // [修改] 确保状态中的时间与播放器一致
                 currentRepeat = 1,
                 totalDuration = finalDuration,
                 isPlaying = false,
@@ -119,7 +128,6 @@ class SentencePlayer @Inject constructor(
         }
     }
 
-    // 根据类型选择解析器
     private fun parseSubtitle(content: String, type: String, duration: Long): List<LrcSentence> {
         return when (type) {
             "srt" -> SrtParser.parse(content)
@@ -127,7 +135,6 @@ class SentencePlayer @Inject constructor(
         }
     }
 
-    // 修正最后一句的时间（针对LRC依赖总时长的情况）
     private fun updateLastSentenceDuration(duration: Long) {
         val currentSentences = _state.value.sentences
         if (currentSentences.isNotEmpty() && pendingSubtitleType != "srt") {
@@ -152,16 +159,16 @@ class SentencePlayer @Inject constructor(
         audioPlayer.play()
         _state.value = _state.value.copy(isPlaying = true, isInInterval = false)
         startPositionUpdate()
-        startPeriodicPositionSave()  // 新增：开始定时保存
+        startPeriodicPositionSave()
     }
 
     fun pause() {
         audioPlayer.pause()
         _state.value = _state.value.copy(isPlaying = false)
         stopPositionUpdate()
-        stopPeriodicPositionSave()  // 新增：停止定时保存
+        stopPeriodicPositionSave()
         cancelInterval()
-        saveCurrentPosition()  // 新增：暂停时保存位置
+        saveCurrentPosition()
     }
 
     fun seekToSentence(index: Int) {
@@ -178,7 +185,7 @@ class SentencePlayer @Inject constructor(
             isInInterval = false
         )
 
-        saveCurrentPosition()  // 新增：切换句子时保存位置
+        saveCurrentPosition()
 
         if (_state.value.isPlaying) {
             play()
@@ -203,11 +210,6 @@ class SentencePlayer @Inject constructor(
         )
     }
 
-    // --- 新增：保存播放位置 ---
-
-    /**
-     * 保存当前播放位置到数据库
-     */
     private fun saveCurrentPosition() {
         if (currentAudioId > 0) {
             val position = _state.value.currentPosition
@@ -217,9 +219,6 @@ class SentencePlayer @Inject constructor(
         }
     }
 
-    /**
-     * 开始定时保存播放位置
-     */
     private fun startPeriodicPositionSave() {
         positionSaveJob?.cancel()
         positionSaveJob = scope.launch {
@@ -235,15 +234,10 @@ class SentencePlayer @Inject constructor(
         }
     }
 
-    /**
-     * 停止定时保存播放位置
-     */
     private fun stopPeriodicPositionSave() {
         positionSaveJob?.cancel()
         positionSaveJob = null
     }
-
-    // --- 设置持久化逻辑 Start ---
 
     private fun loadSettings() {
         val speed = prefs.getFloat("speed", 1.0f)
@@ -261,7 +255,7 @@ class SentencePlayer @Inject constructor(
         )
 
         _settings.value = savedSettings
-        audioPlayer.setSpeed(speed) // 立即应用速度
+        audioPlayer.setSpeed(speed)
     }
 
     private fun saveSettings(settings: PlaybackSettings) {
@@ -305,15 +299,9 @@ class SentencePlayer @Inject constructor(
         saveSettings(newSettings)
     }
 
-    // --- 设置持久化逻辑 End ---
-
-    /**
-     * 检查当前句子是否结束
-     */
     private fun checkSentenceEnd(position: Long) {
         val state = _state.value
 
-        // 防抖动：如果正在间隔倒计时中，直接返回
         if (state.isInInterval) return
 
         val currentSentence = state.currentSentence ?: return
@@ -426,7 +414,7 @@ class SentencePlayer @Inject constructor(
     }
 
     fun release() {
-        saveCurrentPosition()  // 释放前保存位置
+        saveCurrentPosition()
         scope.cancel()
         audioPlayer.release()
     }
