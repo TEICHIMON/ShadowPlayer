@@ -45,33 +45,24 @@ class PlayerViewModel @Inject constructor(
     init {
         Log.d(TAG, "PlayerViewModel init")
 
-        // 获取参数，如果没有传递则为 -1L (在 AppNavigation 中定义的默认值)
         val audioId = savedStateHandle.get<Long>("audioId") ?: -1L
         Log.d(TAG, "Received audioId: $audioId")
 
         if (audioId > 0) {
-            // 只有当传入的新 ID 与当前正在播放的 ID 不同时才重新加载
-            // 避免重复点击导致重置播放进度
             val currentId = currentAudioFile.value?.id
             if (currentId != audioId) {
                 loadAudioById(audioId)
             }
         } else {
-            // 如果 audioId 为 -1，说明是直接点击 Tab 进来的
-            // 尝试恢复上次播放的音频
             restoreLastPlayedAudio()
         }
     }
 
-    /**
-     * 恢复上次播放的音频
-     */
     private fun restoreLastPlayedAudio() {
         val lastAudioId = sentencePlayer.getLastPlayedAudioId()
         Log.d(TAG, "Restoring last played audio, id: $lastAudioId")
 
         if (lastAudioId > 0) {
-            // 检查当前是否已经在播放这个文件
             val currentId = _currentAudioFile.value?.id
             if (currentId != lastAudioId) {
                 loadAudioById(lastAudioId)
@@ -109,20 +100,24 @@ class PlayerViewModel @Inject constructor(
                 null
             }
 
-            // 调用 load 时传入 audioId，用于保存播放位置
-            sentencePlayer.load(audioFile.path, lrcContent, subtitlePath, audioFile.id)
+            // [修改] 调用 load 时传入 audioId 和 lastPosition
+            // 恢复播放位置的逻辑现已委托给 SentencePlayer.load 内部处理
+            sentencePlayer.load(
+                audioPath = audioFile.path,
+                lrcContent = lrcContent,
+                subtitlePath = subtitlePath,
+                audioId = audioFile.id,
+                initialPosition = audioFile.lastPosition // 传入上次保存的位置
+            )
 
-            // 恢复上次播放位置
-            if (audioFile.lastPosition > 0) {
-                sentencePlayer.seekTo(audioFile.lastPosition)
-            }
+            // [修改] 已移除单独的 seekTo 调用，防止状态竞争
+            // if (audioFile.lastPosition > 0) { sentencePlayer.seekTo(...) } -> 已删除
 
             // 更新播放次数
             repository.incrementPlayCount(audioFile.id)
         }
     }
 
-    // 辅助方法：读取 LRC 文件内容
     private suspend fun readLrcContent(lrcPath: String): String? = withContext(Dispatchers.IO) {
         try {
             val uri = Uri.parse(lrcPath)
@@ -134,8 +129,6 @@ class PlayerViewModel @Inject constructor(
             null
         }
     }
-
-    // --- 播放控制 (委托给 SentencePlayer) ---
 
     fun togglePlayPause() {
         sentencePlayer.togglePlayPause()
@@ -156,8 +149,6 @@ class PlayerViewModel @Inject constructor(
     fun seekTo(position: Long) {
         sentencePlayer.seekTo(position)
     }
-
-    // --- 设置控制 (委托给 SentencePlayer) ---
 
     fun setSpeed(speed: Float) {
         sentencePlayer.setSpeed(speed)
@@ -182,7 +173,5 @@ class PlayerViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        // 播放位置的保存已经在 SentencePlayer 中处理
-        // SentencePlayer 是 Singleton，不在这里释放
     }
 }
