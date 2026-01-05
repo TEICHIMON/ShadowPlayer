@@ -28,7 +28,7 @@ class AudioRepository @Inject constructor(
     suspend fun incrementPlayCount(id: Long) = audioFileDao.incrementPlayCount(id)
     suspend fun updateFavorite(id: Long, isFavorite: Boolean) = audioFileDao.updateFavorite(id, isFavorite)
     suspend fun updateLrcOffset(id: Long, offset: Long) = audioFileDao.updateLrcOffset(id, offset)
-    suspend fun updateDuration(id: Long, duration: Long) = audioFileDao.updateDuration(id, duration)  // 新增
+    suspend fun updateDuration(id: Long, duration: Long) = audioFileDao.updateDuration(id, duration)
     suspend fun deleteAudio(audioFile: AudioFile) = audioFileDao.delete(audioFile)
 
     // Tags
@@ -41,6 +41,8 @@ class AudioRepository @Inject constructor(
     suspend fun addTagToAudio(audioId: Long, tagId: Long) = tagDao.addTagToAudio(AudioTag(audioId, tagId))
     suspend fun removeTagFromAudio(audioId: Long, tagId: Long) = tagDao.removeTagFromAudio(AudioTag(audioId, tagId))
     fun getAudioFilesByTag(tagId: Long): Flow<List<AudioFile>> = tagDao.getAudioFilesByTag(tagId)
+    // 新增：调用 DAO 获取所有带标签的音频
+    fun getAudioFilesWithAnyTag(): Flow<List<AudioFile>> = tagDao.getAudioFilesWithAnyTag()
     fun getTagsForAudio(audioId: Long): Flow<List<Tag>> = tagDao.getTagsForAudio(audioId)
 
     // Bookmarks
@@ -56,7 +58,7 @@ class AudioRepository @Inject constructor(
     suspend fun getAllPaths(): List<String> = audioFileDao.getAllPaths()
 
     suspend fun insertAllIgnore(audioFiles: List<AudioFile>) = audioFileDao.insertAllIgnore(audioFiles)
-    
+
     suspend fun insertScanFolder(folder: ScanFolder): Long = scanFolderDao.insert(folder)
     suspend fun deleteScanFolder(folder: ScanFolder) = scanFolderDao.delete(folder)
 }

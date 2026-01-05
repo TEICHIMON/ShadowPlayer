@@ -24,11 +24,11 @@ class LibraryViewModel @Inject constructor(
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
-    // 1. 新增：搜索关键词状态
+    // 1. 搜索关键词状态
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    // 2. 修改：'全部'列表 - 结合搜索词过滤
+    // 2. '全部'列表 - 结合搜索词过滤
     val audioFiles: StateFlow<List<AudioFile>> = combine(
         repository.getAllAudioFiles(),
         _searchQuery
@@ -36,7 +36,7 @@ class LibraryViewModel @Inject constructor(
         if (query.isBlank()) files else files.filter { it.title.contains(query, ignoreCase = true) }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // 3. 修改：'收藏'列表 - 结合搜索词过滤
+    // 3. '收藏'列表 - 结合搜索词过滤
     val favorites: StateFlow<List<AudioFile>> = combine(
         repository.getFavorites(),
         _searchQuery
@@ -56,14 +56,15 @@ class LibraryViewModel @Inject constructor(
     private val _selectedTagId = MutableStateFlow<Long?>(null)
     val selectedTagId: StateFlow<Long?> = _selectedTagId.asStateFlow()
 
-    // 4. 修改：'标签'列表 - 先获取当前标签下的文件，再结合搜索词过滤
-    // 这样你可以在“英语”标签下，搜索“Lesson 1”，实现精准查找
+    // 4. 修改：'标签'列表逻辑
     val audioFilesByTag: StateFlow<List<AudioFile>> = combine(
         _selectedTagId.flatMapLatest { tagId ->
             if (tagId != null) {
+                // 如果选中了某个特定标签，显示该标签下的文件
                 repository.getAudioFilesByTag(tagId)
             } else {
-                repository.getAllAudioFiles()
+                // 修改点：如果未选中标签（"全部"），只显示打过标签的文件
+                repository.getAudioFilesWithAnyTag()
             }
         },
         _searchQuery
@@ -74,7 +75,7 @@ class LibraryViewModel @Inject constructor(
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
-    // 新增：更新搜索词的方法
+    // 更新搜索词的方法
     fun search(query: String) {
         _searchQuery.value = query
     }
