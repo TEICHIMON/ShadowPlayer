@@ -52,6 +52,11 @@ class AudioRepository @Inject constructor(
 
     // Scan Folders
     fun getAllScanFolders(): Flow<List<ScanFolder>> = scanFolderDao.getAllFolders()
+
+    suspend fun getAllPaths(): List<String> = audioFileDao.getAllPaths()
+
+    suspend fun insertAllIgnore(audioFiles: List<AudioFile>) = audioFileDao.insertAllIgnore(audioFiles)
+    
     suspend fun insertScanFolder(folder: ScanFolder): Long = scanFolderDao.insert(folder)
     suspend fun deleteScanFolder(folder: ScanFolder) = scanFolderDao.delete(folder)
 }

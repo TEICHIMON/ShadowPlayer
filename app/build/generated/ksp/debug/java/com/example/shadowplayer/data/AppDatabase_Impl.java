@@ -50,6 +50,7 @@ public final class AppDatabase_Impl extends AppDatabase {
       @Override
       public void createAllTables(@NonNull final SupportSQLiteDatabase db) {
         db.execSQL("CREATE TABLE IF NOT EXISTS `audio_files` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `path` TEXT NOT NULL, `title` TEXT NOT NULL, `duration` INTEGER NOT NULL, `lrcPath` TEXT, `lrcOffset` INTEGER NOT NULL, `lastPosition` INTEGER NOT NULL, `playCount` INTEGER NOT NULL, `isFavorite` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL)");
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_audio_files_path` ON `audio_files` (`path`)");
         db.execSQL("CREATE TABLE IF NOT EXISTS `tags` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `color` TEXT NOT NULL, `parentId` INTEGER, `order` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, FOREIGN KEY(`parentId`) REFERENCES `tags`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )");
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_tags_parentId` ON `tags` (`parentId`)");
         db.execSQL("CREATE TABLE IF NOT EXISTS `audio_tags` (`audioId` INTEGER NOT NULL, `tagId` INTEGER NOT NULL, PRIMARY KEY(`audioId`, `tagId`), FOREIGN KEY(`audioId`) REFERENCES `audio_files`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`tagId`) REFERENCES `tags`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )");
@@ -59,7 +60,7 @@ public final class AppDatabase_Impl extends AppDatabase {
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_bookmarks_audioId` ON `bookmarks` (`audioId`)");
         db.execSQL("CREATE TABLE IF NOT EXISTS `scan_folders` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `path` TEXT NOT NULL, `name` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)");
         db.execSQL("CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)");
-        db.execSQL("INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b0894bdf01c0e5ae60433752b06b6e6c')");
+        db.execSQL("INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'ef8240df35510805a1e606fbafd7d6cd')");
       }
 
       @Override
@@ -125,7 +126,8 @@ public final class AppDatabase_Impl extends AppDatabase {
         _columnsAudioFiles.put("isFavorite", new TableInfo.Column("isFavorite", "INTEGER", true, 0, null, TableInfo.CREATED_FROM_ENTITY));
         _columnsAudioFiles.put("createdAt", new TableInfo.Column("createdAt", "INTEGER", true, 0, null, TableInfo.CREATED_FROM_ENTITY));
         final HashSet<TableInfo.ForeignKey> _foreignKeysAudioFiles = new HashSet<TableInfo.ForeignKey>(0);
-        final HashSet<TableInfo.Index> _indicesAudioFiles = new HashSet<TableInfo.Index>(0);
+        final HashSet<TableInfo.Index> _indicesAudioFiles = new HashSet<TableInfo.Index>(1);
+        _indicesAudioFiles.add(new TableInfo.Index("index_audio_files_path", true, Arrays.asList("path"), Arrays.asList("ASC")));
         final TableInfo _infoAudioFiles = new TableInfo("audio_files", _columnsAudioFiles, _foreignKeysAudioFiles, _indicesAudioFiles);
         final TableInfo _existingAudioFiles = TableInfo.read(db, "audio_files");
         if (!_infoAudioFiles.equals(_existingAudioFiles)) {
@@ -201,7 +203,7 @@ public final class AppDatabase_Impl extends AppDatabase {
         }
         return new RoomOpenHelper.ValidationResult(true, null);
       }
-    }, "b0894bdf01c0e5ae60433752b06b6e6c", "e8c6183fd5b74ad2ff53744a044d62fb");
+    }, "ef8240df35510805a1e606fbafd7d6cd", "ece07006437f87c895b5d0cc1763f0f1");
     final SupportSQLiteOpenHelper.Configuration _sqliteConfig = SupportSQLiteOpenHelper.Configuration.builder(config.context).name(config.name).callback(_openCallback).build();
     final SupportSQLiteOpenHelper _helper = config.sqliteOpenHelperFactory.create(_sqliteConfig);
     return _helper;

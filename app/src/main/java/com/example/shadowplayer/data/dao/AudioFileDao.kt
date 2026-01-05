@@ -24,6 +24,14 @@ interface AudioFileDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(audioFiles: List<AudioFile>)
 
+    // 新增：直接获取所有路径，用于扫描时快速比对
+    @Query("SELECT path FROM audio_files")
+    suspend fun getAllPaths(): List<String>
+
+    // 修改：使用 IGNORE 策略，如果路径存在则忽略，保留原有的播放记录和收藏状态
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertAllIgnore(audioFiles: List<AudioFile>)
+
     @Update
     suspend fun update(audioFile: AudioFile)
 

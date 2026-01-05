@@ -17,6 +17,8 @@ import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
@@ -78,23 +80,34 @@ class LibraryViewModel @Inject constructor(
     }
 
     /**
-     * 扫描指定文件夹
+     * 扫描指定文件夹 (修复版)
      */
     fun scanFolder(folder: ScanFolder) {
-        viewModelScope.launch {
+        // 修改点1：使用 IO Dispatcher 避免主线程卡死
+        viewModelScope.launch(Dispatchers.IO) {
             _isScanning.value = true
             try {
                 val uri = Uri.parse(folder.path)
                 val docFile = DocumentFile.fromTreeUri(context, uri)
-                val audioFiles = mutableListOf<AudioFile>()
 
-                docFile?.let { scanDirectory(it, audioFiles) }
+                // 修改点2：先获取数据库中已有的所有文件路径
+                // (请确保在 Repository/DAO 中实现了 getAllPaths)
+                val existingPaths = repository.getAllPaths().toHashSet()
 
-                if (audioFiles.isNotEmpty()) {
-                    repository.insertAllAudio(audioFiles)
+                val newAudioFiles = mutableListOf<AudioFile>()
+
+                docFile?.let {
+                    // 传入 existingPaths 进行过滤
+                    scanDirectory(it, newAudioFiles, existingPaths)
+                }
+
+                if (newAudioFiles.isNotEmpty()) {
+                    // 修改点3：使用 IGNORE 策略插入，避免覆盖旧数据
+                    repository.insertAllIgnore(newAudioFiles)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
+                Log.e("LibraryViewModel", "Scan failed", e)
             } finally {
                 _isScanning.value = false
             }
@@ -112,14 +125,30 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    private fun scanDirectory(directory: DocumentFile, results: MutableList<AudioFile>) {
+    // 递归扫描逻辑优化
+    private fun scanDirectory(
+        directory: DocumentFile,
+        results: MutableList<AudioFile>,
+        existingPaths: HashSet<String>
+    ) {
         directory.listFiles().forEach { file ->
             if (file.isDirectory) {
-                scanDirectory(file, results)
-            } else if (isAudioFile(file.name ?: "")) {
-                val audioFile = createAudioFile(file)
-                if (audioFile != null) {
-                    results.add(audioFile)
+                scanDirectory(file, results, existingPaths)
+            } else {
+                val fileName = file.name ?: ""
+                val filePath = file.uri.toString()
+
+                // 修改点4：核心优化！如果路径已存在，直接跳过，
+                // 不再进行耗时的 createAudioFile (MediaMetadataRetriever)
+                if (existingPaths.contains(filePath)) {
+                    return@forEach
+                }
+
+                if (isAudioFile(fileName)) {
+                    val audioFile = createAudioFile(file)
+                    if (audioFile != null) {
+                        results.add(audioFile)
+                    }
                 }
             }
         }
