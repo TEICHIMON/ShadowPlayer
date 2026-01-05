@@ -37,6 +37,8 @@ public final class AudioFileDao_Impl implements AudioFileDao {
 
   private final EntityInsertionAdapter<AudioFile> __insertionAdapterOfAudioFile;
 
+  private final EntityInsertionAdapter<AudioFile> __insertionAdapterOfAudioFile_1;
+
   private final EntityDeletionOrUpdateAdapter<AudioFile> __deletionAdapterOfAudioFile;
 
   private final EntityDeletionOrUpdateAdapter<AudioFile> __updateAdapterOfAudioFile;
@@ -60,6 +62,33 @@ public final class AudioFileDao_Impl implements AudioFileDao {
       @NonNull
       protected String createQuery() {
         return "INSERT OR REPLACE INTO `audio_files` (`id`,`path`,`title`,`duration`,`lrcPath`,`lrcOffset`,`lastPosition`,`playCount`,`isFavorite`,`createdAt`) VALUES (nullif(?, 0),?,?,?,?,?,?,?,?,?)";
+      }
+
+      @Override
+      protected void bind(@NonNull final SupportSQLiteStatement statement,
+          @NonNull final AudioFile entity) {
+        statement.bindLong(1, entity.getId());
+        statement.bindString(2, entity.getPath());
+        statement.bindString(3, entity.getTitle());
+        statement.bindLong(4, entity.getDuration());
+        if (entity.getLrcPath() == null) {
+          statement.bindNull(5);
+        } else {
+          statement.bindString(5, entity.getLrcPath());
+        }
+        statement.bindLong(6, entity.getLrcOffset());
+        statement.bindLong(7, entity.getLastPosition());
+        statement.bindLong(8, entity.getPlayCount());
+        final int _tmp = entity.isFavorite() ? 1 : 0;
+        statement.bindLong(9, _tmp);
+        statement.bindLong(10, entity.getCreatedAt());
+      }
+    };
+    this.__insertionAdapterOfAudioFile_1 = new EntityInsertionAdapter<AudioFile>(__db) {
+      @Override
+      @NonNull
+      protected String createQuery() {
+        return "INSERT OR IGNORE INTO `audio_files` (`id`,`path`,`title`,`duration`,`lrcPath`,`lrcOffset`,`lastPosition`,`playCount`,`isFavorite`,`createdAt`) VALUES (nullif(?, 0),?,?,?,?,?,?,?,?,?)";
       }
 
       @Override
@@ -201,6 +230,25 @@ public final class AudioFileDao_Impl implements AudioFileDao {
         __db.beginTransaction();
         try {
           __insertionAdapterOfAudioFile.insert(audioFiles);
+          __db.setTransactionSuccessful();
+          return Unit.INSTANCE;
+        } finally {
+          __db.endTransaction();
+        }
+      }
+    }, $completion);
+  }
+
+  @Override
+  public Object insertAllIgnore(final List<AudioFile> audioFiles,
+      final Continuation<? super Unit> $completion) {
+    return CoroutinesRoom.execute(__db, true, new Callable<Unit>() {
+      @Override
+      @NonNull
+      public Unit call() throws Exception {
+        __db.beginTransaction();
+        try {
+          __insertionAdapterOfAudioFile_1.insert(audioFiles);
           __db.setTransactionSuccessful();
           return Unit.INSTANCE;
         } finally {
@@ -657,6 +705,32 @@ public final class AudioFileDao_Impl implements AudioFileDao {
             _result = new AudioFile(_tmpId,_tmpPath,_tmpTitle,_tmpDuration,_tmpLrcPath,_tmpLrcOffset,_tmpLastPosition,_tmpPlayCount,_tmpIsFavorite,_tmpCreatedAt);
           } else {
             _result = null;
+          }
+          return _result;
+        } finally {
+          _cursor.close();
+          _statement.release();
+        }
+      }
+    }, $completion);
+  }
+
+  @Override
+  public Object getAllPaths(final Continuation<? super List<String>> $completion) {
+    final String _sql = "SELECT path FROM audio_files";
+    final RoomSQLiteQuery _statement = RoomSQLiteQuery.acquire(_sql, 0);
+    final CancellationSignal _cancellationSignal = DBUtil.createCancellationSignal();
+    return CoroutinesRoom.execute(__db, false, _cancellationSignal, new Callable<List<String>>() {
+      @Override
+      @NonNull
+      public List<String> call() throws Exception {
+        final Cursor _cursor = DBUtil.query(__db, _statement, false, null);
+        try {
+          final List<String> _result = new ArrayList<String>(_cursor.getCount());
+          while (_cursor.moveToNext()) {
+            final String _item;
+            _item = _cursor.getString(0);
+            _result.add(_item);
           }
           return _result;
         } finally {
