@@ -24,11 +24,25 @@ class LibraryViewModel @Inject constructor(
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
-    val audioFiles: StateFlow<List<AudioFile>> = repository.getAllAudioFiles()
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    // 1. 新增：搜索关键词状态
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    val favorites: StateFlow<List<AudioFile>> = repository.getFavorites()
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    // 2. 修改：'全部'列表 - 结合搜索词过滤
+    val audioFiles: StateFlow<List<AudioFile>> = combine(
+        repository.getAllAudioFiles(),
+        _searchQuery
+    ) { files, query ->
+        if (query.isBlank()) files else files.filter { it.title.contains(query, ignoreCase = true) }
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    // 3. 修改：'收藏'列表 - 结合搜索词过滤
+    val favorites: StateFlow<List<AudioFile>> = combine(
+        repository.getFavorites(),
+        _searchQuery
+    ) { files, query ->
+        if (query.isBlank()) files else files.filter { it.title.contains(query, ignoreCase = true) }
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val scanFolders: StateFlow<List<ScanFolder>> = repository.getAllScanFolders()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
@@ -36,21 +50,34 @@ class LibraryViewModel @Inject constructor(
     val rootTags: StateFlow<List<Tag>> = repository.getRootTags()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
+    val allTags: StateFlow<List<Tag>> = repository.getAllTags()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
     private val _selectedTagId = MutableStateFlow<Long?>(null)
     val selectedTagId: StateFlow<Long?> = _selectedTagId.asStateFlow()
 
-    val audioFilesByTag: StateFlow<List<AudioFile>> = _selectedTagId
-        .flatMapLatest { tagId ->
+    // 4. 修改：'标签'列表 - 先获取当前标签下的文件，再结合搜索词过滤
+    // 这样你可以在“英语”标签下，搜索“Lesson 1”，实现精准查找
+    val audioFilesByTag: StateFlow<List<AudioFile>> = combine(
+        _selectedTagId.flatMapLatest { tagId ->
             if (tagId != null) {
                 repository.getAudioFilesByTag(tagId)
             } else {
-                flowOf(emptyList())
+                repository.getAllAudioFiles()
             }
-        }
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+        },
+        _searchQuery
+    ) { files, query ->
+        if (query.isBlank()) files else files.filter { it.title.contains(query, ignoreCase = true) }
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+
+    // 新增：更新搜索词的方法
+    fun search(query: String) {
+        _searchQuery.value = query
+    }
 
     /**
      * 添加扫描文件夹 (SAF Uri)
@@ -197,7 +224,6 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    // 新增：更新标签（重命名等）
     fun updateTag(tag: Tag) {
         viewModelScope.launch {
             repository.updateTag(tag)
