@@ -44,6 +44,14 @@ interface TagDao {
     """)
     fun getAudioFilesByTag(tagId: Long): Flow<List<AudioFile>>
 
+    // 新增：获取所有至少拥有一个标签的音频文件（使用 DISTINCT 去重，防止同一个文件因为有多个标签而出现多次）
+    @Query("""
+        SELECT DISTINCT af.* FROM audio_files af
+        INNER JOIN audio_tags at ON af.id = at.audioId
+        ORDER BY af.title ASC
+    """)
+    fun getAudioFilesWithAnyTag(): Flow<List<AudioFile>>
+
     @Query("""
         SELECT t.* FROM tags t
         INNER JOIN audio_tags at ON t.id = at.tagId

@@ -507,6 +507,76 @@ public final class TagDao_Impl implements TagDao {
   }
 
   @Override
+  public Flow<List<AudioFile>> getAudioFilesWithAnyTag() {
+    final String _sql = "\n"
+            + "        SELECT DISTINCT af.* FROM audio_files af\n"
+            + "        INNER JOIN audio_tags at ON af.id = at.audioId\n"
+            + "        ORDER BY af.title ASC\n"
+            + "    ";
+    final RoomSQLiteQuery _statement = RoomSQLiteQuery.acquire(_sql, 0);
+    return CoroutinesRoom.createFlow(__db, false, new String[] {"audio_files",
+        "audio_tags"}, new Callable<List<AudioFile>>() {
+      @Override
+      @NonNull
+      public List<AudioFile> call() throws Exception {
+        final Cursor _cursor = DBUtil.query(__db, _statement, false, null);
+        try {
+          final int _cursorIndexOfId = CursorUtil.getColumnIndexOrThrow(_cursor, "id");
+          final int _cursorIndexOfPath = CursorUtil.getColumnIndexOrThrow(_cursor, "path");
+          final int _cursorIndexOfTitle = CursorUtil.getColumnIndexOrThrow(_cursor, "title");
+          final int _cursorIndexOfDuration = CursorUtil.getColumnIndexOrThrow(_cursor, "duration");
+          final int _cursorIndexOfLrcPath = CursorUtil.getColumnIndexOrThrow(_cursor, "lrcPath");
+          final int _cursorIndexOfLrcOffset = CursorUtil.getColumnIndexOrThrow(_cursor, "lrcOffset");
+          final int _cursorIndexOfLastPosition = CursorUtil.getColumnIndexOrThrow(_cursor, "lastPosition");
+          final int _cursorIndexOfPlayCount = CursorUtil.getColumnIndexOrThrow(_cursor, "playCount");
+          final int _cursorIndexOfIsFavorite = CursorUtil.getColumnIndexOrThrow(_cursor, "isFavorite");
+          final int _cursorIndexOfCreatedAt = CursorUtil.getColumnIndexOrThrow(_cursor, "createdAt");
+          final List<AudioFile> _result = new ArrayList<AudioFile>(_cursor.getCount());
+          while (_cursor.moveToNext()) {
+            final AudioFile _item;
+            final long _tmpId;
+            _tmpId = _cursor.getLong(_cursorIndexOfId);
+            final String _tmpPath;
+            _tmpPath = _cursor.getString(_cursorIndexOfPath);
+            final String _tmpTitle;
+            _tmpTitle = _cursor.getString(_cursorIndexOfTitle);
+            final long _tmpDuration;
+            _tmpDuration = _cursor.getLong(_cursorIndexOfDuration);
+            final String _tmpLrcPath;
+            if (_cursor.isNull(_cursorIndexOfLrcPath)) {
+              _tmpLrcPath = null;
+            } else {
+              _tmpLrcPath = _cursor.getString(_cursorIndexOfLrcPath);
+            }
+            final long _tmpLrcOffset;
+            _tmpLrcOffset = _cursor.getLong(_cursorIndexOfLrcOffset);
+            final long _tmpLastPosition;
+            _tmpLastPosition = _cursor.getLong(_cursorIndexOfLastPosition);
+            final int _tmpPlayCount;
+            _tmpPlayCount = _cursor.getInt(_cursorIndexOfPlayCount);
+            final boolean _tmpIsFavorite;
+            final int _tmp;
+            _tmp = _cursor.getInt(_cursorIndexOfIsFavorite);
+            _tmpIsFavorite = _tmp != 0;
+            final long _tmpCreatedAt;
+            _tmpCreatedAt = _cursor.getLong(_cursorIndexOfCreatedAt);
+            _item = new AudioFile(_tmpId,_tmpPath,_tmpTitle,_tmpDuration,_tmpLrcPath,_tmpLrcOffset,_tmpLastPosition,_tmpPlayCount,_tmpIsFavorite,_tmpCreatedAt);
+            _result.add(_item);
+          }
+          return _result;
+        } finally {
+          _cursor.close();
+        }
+      }
+
+      @Override
+      protected void finalize() {
+        _statement.release();
+      }
+    });
+  }
+
+  @Override
   public Flow<List<Tag>> getTagsForAudio(final long audioId) {
     final String _sql = "\n"
             + "        SELECT t.* FROM tags t\n"
