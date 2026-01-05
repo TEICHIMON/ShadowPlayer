@@ -3,6 +3,7 @@ package com.example.shadowplayer.ui.library
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -46,103 +47,115 @@ fun LibraryScreen(
 
     var selectedTab by remember { mutableStateOf(LibraryTab.ALL) }
     var showAddTagDialog by remember { mutableStateOf(false) }
-
-    // 新增：控制“添加到标签”对话框的状态
     var showAddToTagDialog by remember { mutableStateOf<AudioFile?>(null) }
+
+    // 新增：控制是否显示标签管理页面
+    var showTagManager by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
 
-    // 文件夹选择器
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         uri?.let {
-            // 持久化权限
             val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION
             context.contentResolver.takePersistableUriPermission(it, takeFlags)
             viewModel.addScanFolder(it)
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // 顶部标签栏
-        ScrollableTabRow(
-            selectedTabIndex = selectedTab.ordinal,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Tab(
-                selected = selectedTab == LibraryTab.ALL,
-                onClick = { selectedTab = LibraryTab.ALL },
-                text = { Text("全部 (${audioFiles.size})") }
-            )
-            Tab(
-                selected = selectedTab == LibraryTab.FAVORITES,
-                onClick = { selectedTab = LibraryTab.FAVORITES },
-                text = { Text("收藏 (${favorites.size})") }
-            )
-            Tab(
-                selected = selectedTab == LibraryTab.TAGS,
-                onClick = { selectedTab = LibraryTab.TAGS },
-                text = { Text("标签") }
-            )
-            Tab(
-                selected = selectedTab == LibraryTab.FOLDERS,
-                onClick = { selectedTab = LibraryTab.FOLDERS },
-                text = { Text("文件夹") }
-            )
-        }
+    // 如果处于管理页面，拦截返回键
+    BackHandler(enabled = showTagManager) {
+        showTagManager = false
+    }
 
-        // 扫描中提示
-        if (isScanning) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        }
+    if (showTagManager) {
+        // 显示独立的标签管理页面
+        TagManagementScreen(
+            tags = rootTags,
+            onBack = { showTagManager = false },
+            onDeleteTag = { viewModel.deleteTag(it) },
+            onUpdateTag = { viewModel.updateTag(it) },
+            onCreateTag = { viewModel.createTag(it) }
+        )
+    } else {
+        // 显示主界面
+        Column(modifier = Modifier.fillMaxSize()) {
+            ScrollableTabRow(
+                selectedTabIndex = selectedTab.ordinal,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Tab(
+                    selected = selectedTab == LibraryTab.ALL,
+                    onClick = { selectedTab = LibraryTab.ALL },
+                    text = { Text("全部 (${audioFiles.size})") }
+                )
+                Tab(
+                    selected = selectedTab == LibraryTab.FAVORITES,
+                    onClick = { selectedTab = LibraryTab.FAVORITES },
+                    text = { Text("收藏 (${favorites.size})") }
+                )
+                Tab(
+                    selected = selectedTab == LibraryTab.TAGS,
+                    onClick = { selectedTab = LibraryTab.TAGS },
+                    text = { Text("标签") }
+                )
+                Tab(
+                    selected = selectedTab == LibraryTab.FOLDERS,
+                    onClick = { selectedTab = LibraryTab.FOLDERS },
+                    text = { Text("文件夹") }
+                )
+            }
 
-        // 内容区域
-        when (selectedTab) {
-            LibraryTab.ALL -> {
-                AudioFileList(
-                    audioFiles = audioFiles,
-                    onFileClick = onFileSelected,
-                    onFavoriteClick = { viewModel.toggleFavorite(it) },
-                    onDeleteClick = { viewModel.deleteAudio(it) },
-                    onAddTagClick = { showAddToTagDialog = it } // 传入添加标签回调
-                )
+            if (isScanning) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
-            LibraryTab.FAVORITES -> {
-                AudioFileList(
-                    audioFiles = favorites,
-                    onFileClick = onFileSelected,
-                    onFavoriteClick = { viewModel.toggleFavorite(it) },
-                    onDeleteClick = null, // 收藏夹列表通常只移除收藏状态，不物理删除记录，如需删除可传入回调
-                    onAddTagClick = { showAddToTagDialog = it }
-                )
-            }
-            LibraryTab.TAGS -> {
-                TagsSection(
-                    tags = rootTags,
-                    selectedTagId = selectedTagId,
-                    audioFiles = audioFilesByTag,
-                    onTagClick = { viewModel.selectTag(it) },
-                    onAddTag = { showAddTagDialog = true },
-                    onDeleteTag = { viewModel.deleteTag(it) },
-                    onFileClick = onFileSelected,
-                    onFavoriteClick = { viewModel.toggleFavorite(it) },
-                    onAddTagClick = { showAddToTagDialog = it } // 标签视图下也支持给文件加（其他）标签
-                )
-            }
-            LibraryTab.FOLDERS -> {
-                FoldersSection(
-                    folders = scanFolders,
-                    onAddFolder = { folderPickerLauncher.launch(null) },
-                    onRemoveFolder = { viewModel.removeScanFolder(it) },
-                    onScanFolder = { viewModel.scanFolder(it) },
-                    onScanAll = { viewModel.scanAllFolders() }
-                )
+
+            when (selectedTab) {
+                LibraryTab.ALL -> {
+                    AudioFileList(
+                        audioFiles = audioFiles,
+                        onFileClick = onFileSelected,
+                        onFavoriteClick = { viewModel.toggleFavorite(it) },
+                        onDeleteClick = { viewModel.deleteAudio(it) },
+                        onAddTagClick = { showAddToTagDialog = it }
+                    )
+                }
+                LibraryTab.FAVORITES -> {
+                    AudioFileList(
+                        audioFiles = favorites,
+                        onFileClick = onFileSelected,
+                        onFavoriteClick = { viewModel.toggleFavorite(it) },
+                        onDeleteClick = null,
+                        onAddTagClick = { showAddToTagDialog = it }
+                    )
+                }
+                LibraryTab.TAGS -> {
+                    // 标签视图
+                    TagsSection(
+                        tags = rootTags,
+                        selectedTagId = selectedTagId,
+                        audioFiles = audioFilesByTag,
+                        onTagClick = { viewModel.selectTag(it) },
+                        onManageTags = { showTagManager = true }, // 进入管理页
+                        onFileClick = onFileSelected,
+                        onFavoriteClick = { viewModel.toggleFavorite(it) },
+                        onAddTagClick = { showAddToTagDialog = it }
+                    )
+                }
+                LibraryTab.FOLDERS -> {
+                    FoldersSection(
+                        folders = scanFolders,
+                        onAddFolder = { folderPickerLauncher.launch(null) },
+                        onRemoveFolder = { viewModel.removeScanFolder(it) },
+                        onScanFolder = { viewModel.scanFolder(it) },
+                        onScanAll = { viewModel.scanAllFolders() }
+                    )
+                }
             }
         }
     }
 
-    // 创建新标签对话框
     if (showAddTagDialog) {
         AddTagDialog(
             onDismiss = { showAddTagDialog = false },
@@ -153,15 +166,141 @@ fun LibraryScreen(
         )
     }
 
-    // 将文件添加到已有标签对话框
     showAddToTagDialog?.let { audioFile ->
         AddToTagDialog(
             audioFile = audioFile,
-            tags = rootTags, // 这里使用 rootTags，如果需要所有层级标签可能需要 ViewModel 提供 flatten 列表
+            tags = rootTags,
             onDismiss = { showAddToTagDialog = null },
             onTagSelected = { tag ->
                 viewModel.addTagToAudio(audioFile.id, tag.id)
                 showAddToTagDialog = null
+            }
+        )
+    }
+}
+
+/**
+ * 独立的标签管理页面 (Option B)
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TagManagementScreen(
+    tags: List<Tag>,
+    onBack: () -> Unit,
+    onDeleteTag: (Tag) -> Unit,
+    onUpdateTag: (Tag) -> Unit,
+    onCreateTag: (String) -> Unit
+) {
+    var tagToDelete by remember { mutableStateOf<Tag?>(null) }
+    var tagToEdit by remember { mutableStateOf<Tag?>(null) }
+    var showCreateDialog by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("标签管理") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "返回")
+                    }
+                }
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(onClick = { showCreateDialog = true }) {
+                Icon(Icons.Default.Add, contentDescription = "新建标签")
+            }
+        }
+    ) { padding ->
+        if (tags.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "暂无标签",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                contentPadding = PaddingValues(bottom = 80.dp) // 避让FAB
+            ) {
+                items(tags, key = { it.id }) { tag ->
+                    ListItem(
+                        headlineContent = { Text(tag.name) },
+                        leadingContent = {
+                            Icon(Icons.Default.Label, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        },
+                        trailingContent = {
+                            Row {
+                                // 编辑按钮
+                                IconButton(onClick = { tagToEdit = tag }) {
+                                    Icon(Icons.Default.Edit, contentDescription = "重命名")
+                                }
+                                // 删除按钮
+                                IconButton(onClick = { tagToDelete = tag }) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "删除",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        }
+                    )
+                    Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                }
+            }
+        }
+    }
+
+    // 删除确认弹窗
+    tagToDelete?.let { tag ->
+        AlertDialog(
+            onDismissRequest = { tagToDelete = null },
+            title = { Text("删除标签") },
+            text = { Text("确定要删除标签 \"${tag.name}\" 吗？\n所有文件将失去此分类，但文件本身不会被删除。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteTag(tag)
+                        tagToDelete = null
+                    }
+                ) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { tagToDelete = null }) { Text("取消") }
+            }
+        )
+    }
+
+    // 编辑/重命名弹窗
+    tagToEdit?.let { tag ->
+        EditTagDialog(
+            initialName = tag.name,
+            onDismiss = { tagToEdit = null },
+            onConfirm = { newName ->
+                onUpdateTag(tag.copy(name = newName))
+                tagToEdit = null
+            }
+        )
+    }
+
+    // 新建弹窗
+    if (showCreateDialog) {
+        AddTagDialog(
+            onDismiss = { showCreateDialog = false },
+            onConfirm = { name ->
+                onCreateTag(name)
+                showCreateDialog = false
             }
         )
     }
@@ -173,7 +312,7 @@ fun AudioFileList(
     onFileClick: (AudioFile) -> Unit,
     onFavoriteClick: (AudioFile) -> Unit,
     onDeleteClick: ((AudioFile) -> Unit)? = null,
-    onAddTagClick: ((AudioFile) -> Unit)? = null // 新增：添加标签回调
+    onAddTagClick: ((AudioFile) -> Unit)? = null
 ) {
     if (audioFiles.isEmpty()) {
         Box(
@@ -211,7 +350,7 @@ fun AudioFileItem(
     onClick: () -> Unit,
     onFavoriteClick: () -> Unit,
     onDeleteClick: ((AudioFile) -> Unit)?,
-    onAddTagClick: ((AudioFile) -> Unit)? // 新增参数
+    onAddTagClick: ((AudioFile) -> Unit)?
 ) {
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
@@ -220,7 +359,6 @@ fun AudioFileItem(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            // 使用 combinedClickable 实现长按
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = {
@@ -277,12 +415,10 @@ fun AudioFileItem(
                 }
             }
 
-            // 长按菜单
             DropdownMenu(
                 expanded = showMenu,
                 onDismissRequest = { showMenu = false }
             ) {
-                // 新增：添加到标签
                 if (onAddTagClick != null) {
                     DropdownMenuItem(
                         text = { Text("添加到标签") },
@@ -308,7 +444,6 @@ fun AudioFileItem(
                         }
                     )
                 } else {
-                    // 如果没有操作项，显示占位（或者可以直接不显示菜单）
                     if (onAddTagClick == null) {
                         DropdownMenuItem(
                             text = { Text("暂无操作") },
@@ -320,7 +455,6 @@ fun AudioFileItem(
         }
     }
 
-    // 删除确认对话框
     if (showDeleteConfirmDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirmDialog = false },
@@ -351,59 +485,55 @@ fun TagsSection(
     selectedTagId: Long?,
     audioFiles: List<AudioFile>,
     onTagClick: (Long?) -> Unit,
-    onAddTag: () -> Unit,
-    onDeleteTag: (Tag) -> Unit,
+    onManageTags: () -> Unit, // 修改：不再传入删除回调，而是管理回调
     onFileClick: (AudioFile) -> Unit,
     onFavoriteClick: (AudioFile) -> Unit,
-    onAddTagClick: (AudioFile) -> Unit // 新增
+    onAddTagClick: (AudioFile) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         // 标签列表
-        LazyRow(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            item {
-                FilterChip(
-                    selected = selectedTagId == null,
-                    onClick = { onTagClick(null) },
-                    label = { Text("全部") }
-                )
+            LazyRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item {
+                    FilterChip(
+                        selected = selectedTagId == null,
+                        onClick = { onTagClick(null) },
+                        label = { Text("全部") }
+                    )
+                }
+                items(tags) { tag ->
+                    // 纯净的筛选 Chip，不再包含删除按钮
+                    FilterChip(
+                        selected = selectedTagId == tag.id,
+                        onClick = { onTagClick(tag.id) },
+                        label = { Text(tag.name) }
+                    )
+                }
             }
-            items(tags) { tag ->
-                FilterChip(
-                    selected = selectedTagId == tag.id,
-                    onClick = { onTagClick(tag.id) },
-                    label = { Text(tag.name) },
-                    trailingIcon = {
-                        IconButton(
-                            onClick = { onDeleteTag(tag) },
-                            modifier = Modifier.size(18.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Close,
-                                contentDescription = "删除",
-                                modifier = Modifier.size(14.dp)
-                            )
-                        }
-                    }
-                )
-            }
-            item {
-                AssistChip(
-                    onClick = onAddTag,
-                    label = { Text("添加") },
-                    leadingIcon = {
-                        Icon(Icons.Default.Add, contentDescription = null)
-                    }
+
+            // 入口：标签管理
+            IconButton(onClick = onManageTags) {
+                Icon(
+                    imageVector = Icons.Default.Settings, // 或者 Icons.Default.Edit
+                    contentDescription = "管理标签",
+                    tint = MaterialTheme.colorScheme.primary
                 )
             }
         }
 
+        Divider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
         // 音频列表
         if (selectedTagId != null) {
+            // 显示选中标签下的文件
             AudioFileList(
                 audioFiles = audioFiles,
                 onFileClick = onFileClick,
@@ -411,12 +541,14 @@ fun TagsSection(
                 onAddTagClick = onAddTagClick
             )
         } else {
+            // 选中“全部”时也显示引导或者空状态，或者可以选择显示所有文件。
+            // 按照原逻辑，Tag Tab 下只有选中 Tag 才显示文件，未选中显示提示。
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "请选择一个标签",
+                    text = "请选择一个标签查看文件",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -433,7 +565,6 @@ fun FoldersSection(
     onScanAll: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        // 操作按钮
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -452,7 +583,6 @@ fun FoldersSection(
             }
         }
 
-        // 文件夹列表
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 16.dp),
@@ -525,7 +655,42 @@ fun AddTagDialog(
     )
 }
 
-// 新增：选择现有标签的对话框
+// 新增：编辑标签对话框
+@Composable
+fun EditTagDialog(
+    initialName: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var tagName by remember { mutableStateOf(initialName) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("重命名标签") },
+        text = {
+            OutlinedTextField(
+                value = tagName,
+                onValueChange = { tagName = it },
+                label = { Text("标签名称") },
+                singleLine = true
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { if (tagName.isNotBlank()) onConfirm(tagName) },
+                enabled = tagName.isNotBlank() && tagName != initialName
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
 @Composable
 fun AddToTagDialog(
     audioFile: AudioFile,
