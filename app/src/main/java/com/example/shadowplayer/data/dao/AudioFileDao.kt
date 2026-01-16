@@ -24,11 +24,9 @@ interface AudioFileDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(audioFiles: List<AudioFile>)
 
-    // 新增：直接获取所有路径，用于扫描时快速比对
     @Query("SELECT path FROM audio_files")
     suspend fun getAllPaths(): List<String>
 
-    // 修改：使用 IGNORE 策略，如果路径存在则忽略，保留原有的播放记录和收藏状态
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAllIgnore(audioFiles: List<AudioFile>)
 
@@ -47,7 +45,6 @@ interface AudioFileDao {
     @Query("UPDATE audio_files SET lrcOffset = :offset WHERE id = :id")
     suspend fun updateLrcOffset(id: Long, offset: Long)
 
-    // 新增：更新音频时长
     @Query("UPDATE audio_files SET duration = :duration WHERE id = :id")
     suspend fun updateDuration(id: Long, duration: Long)
 
@@ -56,4 +53,12 @@ interface AudioFileDao {
 
     @Query("DELETE FROM audio_files WHERE path = :path")
     suspend fun deleteByPath(path: String)
+
+    // [新增] 根据路径前缀删除文件（用于删除文件夹时级联删除）
+    @Query("DELETE FROM audio_files WHERE path LIKE :pathPrefix || '%'")
+    suspend fun deleteByPathPrefix(pathPrefix: String)
+
+    // [新增] 根据 ID 列表批量删除
+    @Query("DELETE FROM audio_files WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<Long>)
 }
