@@ -14,8 +14,8 @@ data class LrcSentence(
  * LRC 字幕解析器
  */
 object LrcParser {
-    // 匹配时间标签: [mm:ss.xx] 或 [mm:ss:xx]
-    private val timeTagRegex = Regex("""\[(\d{2}):(\d{2})[.:](\d{2,3})]""")
+    // [修改] 匹配时间标签: 允许分钟数超过2位 (\d{2,})
+    private val timeTagRegex = Regex("""\[(\d{2,}):(\d{2})[.:](\d{2,3})]""")
 
     /**
      * 解析 LRC 文件内容

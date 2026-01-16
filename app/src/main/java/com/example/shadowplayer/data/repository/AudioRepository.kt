@@ -31,6 +31,12 @@ class AudioRepository @Inject constructor(
     suspend fun updateDuration(id: Long, duration: Long) = audioFileDao.updateDuration(id, duration)
     suspend fun deleteAudio(audioFile: AudioFile) = audioFileDao.delete(audioFile)
 
+    // [新增] 级联删除：删除特定文件夹下的所有音频
+    suspend fun deleteAudioFilesByPathPrefix(pathPrefix: String) = audioFileDao.deleteByPathPrefix(pathPrefix)
+
+    // [新增] 批量删除音频
+    suspend fun deleteAudios(ids: List<Long>) = audioFileDao.deleteByIds(ids)
+
     // Tags
     fun getRootTags(): Flow<List<Tag>> = tagDao.getRootTags()
     fun getChildTags(parentId: Long): Flow<List<Tag>> = tagDao.getChildTags(parentId)
@@ -39,9 +45,16 @@ class AudioRepository @Inject constructor(
     suspend fun updateTag(tag: Tag) = tagDao.update(tag)
     suspend fun deleteTag(tag: Tag) = tagDao.delete(tag)
     suspend fun addTagToAudio(audioId: Long, tagId: Long) = tagDao.addTagToAudio(AudioTag(audioId, tagId))
+
+    // [新增] 批量添加标签
+    suspend fun addTagToAudios(audioIds: List<Long>, tagId: Long) {
+        audioIds.forEach { audioId ->
+            tagDao.addTagToAudio(AudioTag(audioId, tagId))
+        }
+    }
+
     suspend fun removeTagFromAudio(audioId: Long, tagId: Long) = tagDao.removeTagFromAudio(AudioTag(audioId, tagId))
     fun getAudioFilesByTag(tagId: Long): Flow<List<AudioFile>> = tagDao.getAudioFilesByTag(tagId)
-    // 新增：调用 DAO 获取所有带标签的音频
     fun getAudioFilesWithAnyTag(): Flow<List<AudioFile>> = tagDao.getAudioFilesWithAnyTag()
     fun getTagsForAudio(audioId: Long): Flow<List<Tag>> = tagDao.getTagsForAudio(audioId)
 

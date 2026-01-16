@@ -28,7 +28,14 @@ class LibraryViewModel @Inject constructor(
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    // 2. '全部'列表 - 结合搜索词过滤
+    // --- 批量操作状态 [新增] ---
+    private val _isSelectionMode = MutableStateFlow(false)
+    val isSelectionMode: StateFlow<Boolean> = _isSelectionMode.asStateFlow()
+
+    private val _selectedAudioIds = MutableStateFlow<Set<Long>>(emptySet())
+    val selectedAudioIds: StateFlow<Set<Long>> = _selectedAudioIds.asStateFlow()
+
+    // 2. '全部'列表
     val audioFiles: StateFlow<List<AudioFile>> = combine(
         repository.getAllAudioFiles(),
         _searchQuery
@@ -36,7 +43,7 @@ class LibraryViewModel @Inject constructor(
         if (query.isBlank()) files else files.filter { it.title.contains(query, ignoreCase = true) }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // 3. '收藏'列表 - 结合搜索词过滤
+    // 3. '收藏'列表
     val favorites: StateFlow<List<AudioFile>> = combine(
         repository.getFavorites(),
         _searchQuery
@@ -56,14 +63,12 @@ class LibraryViewModel @Inject constructor(
     private val _selectedTagId = MutableStateFlow<Long?>(null)
     val selectedTagId: StateFlow<Long?> = _selectedTagId.asStateFlow()
 
-    // 4. 修改：'标签'列表逻辑
+    // 4. '标签'列表
     val audioFilesByTag: StateFlow<List<AudioFile>> = combine(
         _selectedTagId.flatMapLatest { tagId ->
             if (tagId != null) {
-                // 如果选中了某个特定标签，显示该标签下的文件
                 repository.getAudioFilesByTag(tagId)
             } else {
-                // 修改点：如果未选中标签（"全部"），只显示打过标签的文件
                 repository.getAudioFilesWithAnyTag()
             }
         },
@@ -75,14 +80,61 @@ class LibraryViewModel @Inject constructor(
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
-    // 更新搜索词的方法
+    // 更新搜索词
     fun search(query: String) {
         _searchQuery.value = query
     }
 
-    /**
-     * 添加扫描文件夹 (SAF Uri)
-     */
+    // --- 批量操作逻辑 [新增] ---
+
+    fun enterSelectionMode(initialId: Long) {
+        _isSelectionMode.value = true
+        _selectedAudioIds.value = setOf(initialId)
+    }
+
+    fun exitSelectionMode() {
+        _isSelectionMode.value = false
+        _selectedAudioIds.value = emptySet()
+    }
+
+    fun toggleSelection(id: Long) {
+        val current = _selectedAudioIds.value
+        if (current.contains(id)) {
+            _selectedAudioIds.value = current - id
+            if (_selectedAudioIds.value.isEmpty()) {
+                exitSelectionMode()
+            }
+        } else {
+            _selectedAudioIds.value = current + id
+        }
+    }
+
+    fun selectAll(files: List<AudioFile>) {
+        _selectedAudioIds.value = files.map { it.id }.toSet()
+    }
+
+    fun deleteSelected() {
+        viewModelScope.launch {
+            val ids = _selectedAudioIds.value.toList()
+            if (ids.isNotEmpty()) {
+                repository.deleteAudios(ids)
+                exitSelectionMode()
+            }
+        }
+    }
+
+    fun addTagsToSelected(tagId: Long) {
+        viewModelScope.launch {
+            val ids = _selectedAudioIds.value.toList()
+            if (ids.isNotEmpty()) {
+                repository.addTagToAudios(ids, tagId)
+                exitSelectionMode()
+            }
+        }
+    }
+
+    // --- 文件夹操作 ---
+
     fun addScanFolder(uri: Uri) {
         viewModelScope.launch {
             val docFile = DocumentFile.fromTreeUri(context, uri)
@@ -97,17 +149,17 @@ class LibraryViewModel @Inject constructor(
     }
 
     /**
-     * 删除扫描文件夹
+     * 删除扫描文件夹 (修复：同时删除该文件夹下的音频记录)
      */
     fun removeScanFolder(folder: ScanFolder) {
         viewModelScope.launch {
+            // 1. 删除文件夹配置
             repository.deleteScanFolder(folder)
+            // 2. [新增] 级联删除该文件夹路径下的所有音频
+            repository.deleteAudioFilesByPathPrefix(folder.path)
         }
     }
 
-    /**
-     * 扫描指定文件夹
-     */
     fun scanFolder(folder: ScanFolder) {
         viewModelScope.launch(Dispatchers.IO) {
             _isScanning.value = true
@@ -133,9 +185,6 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * 扫描所有文件夹
-     */
     fun scanAllFolders() {
         viewModelScope.launch {
             scanFolders.value.forEach { folder ->
@@ -179,7 +228,8 @@ class LibraryViewModel @Inject constructor(
         val uri = file.uri
         val name = file.name ?: return null
 
-        Log.d("LibraryViewModel", "Creating audio file: $name, URI: $uri")
+        // 简单日志，实际发布可去掉
+        // Log.d("LibraryViewModel", "Creating audio file: $name")
 
         val duration = try {
             val retriever = MediaMetadataRetriever()
@@ -213,6 +263,8 @@ class LibraryViewModel @Inject constructor(
         }
         return null
     }
+
+    // --- 标签与单项操作 ---
 
     fun selectTag(tagId: Long?) {
         _selectedTagId.value = tagId
