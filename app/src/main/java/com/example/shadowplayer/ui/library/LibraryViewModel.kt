@@ -20,7 +20,7 @@ import java.io.File
 import java.net.URLDecoder
 import javax.inject.Inject
 
-// [修改] Tab枚举：把ALL改为RECORDS（记录）
+// Tab枚举：把ALL改为RECORDS（记录）
 enum class LibraryTab {
     RECORDS, FAVORITES, HISTORY, TAGS, FOLDERS
 }
@@ -31,14 +31,14 @@ sealed class FileSystemItem {
     data class File(val audioFile: AudioFile) : FileSystemItem()
 }
 
-// [新增] 按文件夹分组的记录
+// 按文件夹分组的记录
 data class FolderGroup(
     val folderName: String,
     val folderPath: String,
     val audioFiles: List<AudioFile>
 )
 
-// [新增] 音频详情数据类
+// 音频详情数据类
 data class AudioFileDetails(
     val audioFile: AudioFile,
     val fileSizeBytes: Long,
@@ -63,11 +63,11 @@ class LibraryViewModel @Inject constructor(
     private val _selectedAudioIds = MutableStateFlow<Set<Long>>(emptySet())
     val selectedAudioIds: StateFlow<Set<Long>> = _selectedAudioIds.asStateFlow()
 
-    // [新增] 音频详情对话框状态
+    // 音频详情对话框状态
     private val _audioDetailsState = MutableStateFlow<AudioFileDetails?>(null)
     val audioDetailsState: StateFlow<AudioFileDetails?> = _audioDetailsState.asStateFlow()
 
-    // [修改] 记录页面：按直接父文件夹分组的历史记录
+    // 记录页面：按直接父文件夹分组的历史记录
     val recordGroups: StateFlow<List<FolderGroup>> = combine(
         repository.getHistory(),
         _searchQuery
@@ -116,47 +116,95 @@ class LibraryViewModel @Inject constructor(
     private val _currentFolderPath = MutableStateFlow<String?>(null)
     val currentFolderPath: StateFlow<String?> = _currentFolderPath.asStateFlow()
 
-    // [新增] 文件夹展开状态
+    // 文件夹展开状态
     private val _expandedFolders = MutableStateFlow<Set<String>>(emptySet())
     val expandedFolders: StateFlow<Set<String>> = _expandedFolders.asStateFlow()
 
-    // [修改] 文件夹内容：显示文件夹和其下的音频
+    // [重写] 文件夹内容：完全基于 Raw URI 进行路径匹配，解决层级展开问题
     val folderContent: StateFlow<List<FileSystemItem>> = combine(
         _currentFolderPath,
         scanFolders,
         allAudioFiles
     ) { currentPath, roots, allFiles ->
         if (currentPath == null) {
-            // 根目录：显示所有已添加的扫描文件夹，并计算音频数量
+            // 根目录：显示所有已添加的扫描文件夹
             roots.map { folder ->
-                val count = allFiles.count { it.path.startsWith(folder.path) }
+                // folder.path 是 Raw URI (e.g. ...%3AMusic)
+                // file.path 也是 Raw URI，直接前缀匹配即可
+                // 注意：为了精确匹配，我们加上 %2F 确保匹配到目录边界，或者完全相等
+                val prefix = folder.path
+                val count = allFiles.count {
+                    it.path == prefix || it.path.startsWith("$prefix%2F") || it.path.startsWith("$prefix/")
+                }
                 FileSystemItem.Folder(folder.name, folder.path, count)
             }
         } else {
-            // 子目录：筛选当前路径下的文件和子文件夹
+            // 子目录
+            // currentPath 是 Raw URI (e.g. ...%3AMusic%2FSub)
             val items = mutableListOf<FileSystemItem>()
             val processedSubFolders = mutableSetOf<String>()
-            val normalizedCurrent = currentPath.trimEnd('/')
+
+            // SAF 路径通常使用 %2F 作为分隔符，但也可能使用 / (取决于具体 URI 实现)
+            // 为了稳健性，我们在 currentPath 后加上分隔符来做前缀匹配
+            // 如果 raw path 本身不以 %2F 结尾，我们假设它是目录
+            val targetPrefixEncoded = "$currentPath%2F"
+            // 有些情况下（如 file scheme），可能是 /
+            val targetPrefixNormal = "$currentPath/"
 
             allFiles.forEach { file ->
-                val decodedPath = try { URLDecoder.decode(file.path, "UTF-8") } catch(e: Exception) { file.path }
-                val parentPath = decodedPath.substringBeforeLast("/")
+                val rawPath = file.path
 
-                // 文件直接在当前文件夹下
-                if (parentPath == normalizedCurrent ||
-                    try { URLDecoder.decode(file.path, "UTF-8") } catch(e: Exception) { file.path }
-                        .substringBeforeLast("/") == normalizedCurrent) {
-                    items.add(FileSystemItem.File(file))
-                }
-                // 找子文件夹
-                else if (file.path.startsWith(normalizedCurrent)) {
-                    val remainder = file.path.removePrefix(normalizedCurrent).removePrefix("/")
-                    val subFolderName = remainder.substringBefore("/")
-                    if (subFolderName != remainder && !processedSubFolders.contains(subFolderName)) {
-                        processedSubFolders.add(subFolderName)
-                        val subFolderPath = "$normalizedCurrent/$subFolderName"
-                        val count = allFiles.count { it.path.startsWith(subFolderPath) }
-                        items.add(FileSystemItem.Folder(subFolderName, subFolderPath, count))
+                // 1. 检查是否在当前目录下
+                // 必须以当前路径开头
+                if (rawPath.startsWith(targetPrefixEncoded) || rawPath.startsWith(targetPrefixNormal)) {
+
+                    val prefixUsed = if (rawPath.startsWith(targetPrefixEncoded)) targetPrefixEncoded else targetPrefixNormal
+
+                    // 获取相对路径部分
+                    val remainder = rawPath.removePrefix(prefixUsed)
+
+                    if (remainder.isEmpty()) return@forEach // 异常情况
+
+                    // 检查剩余部分是否包含分隔符 (%2F 或 /)
+                    // 如果包含，说明是子文件夹；如果不包含，说明是直接文件
+                    val nextSeparatorIndexEncoded = remainder.indexOf("%2F")
+                    val nextSeparatorIndexNormal = remainder.indexOf("/")
+
+                    val isSubFolderEncoded = nextSeparatorIndexEncoded != -1
+                    val isSubFolderNormal = nextSeparatorIndexNormal != -1
+
+                    if (isSubFolderEncoded || isSubFolderNormal) {
+                        // 是子文件夹
+                        val subFolderNameRaw = when {
+                            isSubFolderEncoded && isSubFolderNormal -> remainder.substring(0, minOf(nextSeparatorIndexEncoded, nextSeparatorIndexNormal))
+                            isSubFolderEncoded -> remainder.substring(0, nextSeparatorIndexEncoded)
+                            else -> remainder.substring(0, nextSeparatorIndexNormal)
+                        }
+
+                        // [关键] 构造子文件夹的 Raw Path，用于后续导航
+                        // 必须保持原始编码，这样点击进入后 currentPath 依然是 Raw 的
+                        val subFolderPathRaw = prefixUsed + subFolderNameRaw
+
+                        if (!processedSubFolders.contains(subFolderPathRaw)) {
+                            processedSubFolders.add(subFolderPathRaw)
+
+                            // 显示名称需要解码 (e.g. Music%201 -> Music 1)
+                            val displayName = try {
+                                URLDecoder.decode(subFolderNameRaw, "UTF-8")
+                            } catch (e: Exception) {
+                                subFolderNameRaw
+                            }
+
+                            // 计算子目录下的文件数 (递归)
+                            val subCount = allFiles.count {
+                                it.path.startsWith("$subFolderPathRaw%2F") || it.path.startsWith("$subFolderPathRaw/")
+                            }
+
+                            items.add(FileSystemItem.Folder(displayName, subFolderPathRaw, subCount))
+                        }
+                    } else {
+                        // 是当前目录下的文件
+                        items.add(FileSystemItem.File(file))
                     }
                 }
             }
@@ -191,13 +239,17 @@ class LibraryViewModel @Inject constructor(
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
     // --- 辅助函数 ---
+
+    // [修改] 仅用于显示或历史记录分组，返回解码后的父路径
     private fun getParentFolderPath(filePath: String): String {
         val decoded = try { URLDecoder.decode(filePath, "UTF-8") } catch(e: Exception) { filePath }
         return decoded.substringBeforeLast("/")
     }
 
     private fun getParentFolderName(folderPath: String): String {
-        return folderPath.substringAfterLast("/").ifEmpty { folderPath }
+        // 先解码再截取，确保显示正常
+        val decoded = try { URLDecoder.decode(folderPath, "UTF-8") } catch(e: Exception) { folderPath }
+        return decoded.substringAfterLast("/").ifEmpty { decoded }
     }
 
     // [新增] 获取音频详情
@@ -222,7 +274,7 @@ class LibraryViewModel @Inject constructor(
                     formattedSize = formatFileSize(fileSize),
                     formattedDuration = formatDuration(audioFile.duration),
                     hasSubtitle = !audioFile.lrcPath.isNullOrEmpty(),
-                    parentFolder = getParentFolderName(getParentFolderPath(audioFile.path))
+                    parentFolder = getParentFolderName(audioFile.path) // 使用 decode 后的名称
                 )
                 _audioDetailsState.value = details
             } catch (e: Exception) {
@@ -264,19 +316,31 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun navigateUp() {
-        val current = _currentFolderPath.value
-        if (current != null) {
-            val isRoot = scanFolders.value.any { it.path == current }
-            if (isRoot) {
-                _currentFolderPath.value = null
+        val current = _currentFolderPath.value ?: return
+
+        // 1. 检查是否已经是根目录 (Raw Path 比较)
+        val isRoot = scanFolders.value.any { it.path == current }
+
+        if (isRoot) {
+            _currentFolderPath.value = null
+        } else {
+            // 2. 回到上一级 (移除最后一个 %2F 或 / 及其之后的内容)
+            // 优先处理 %2F (SAF 常见)
+            val lastEncodedSeparator = current.lastIndexOf("%2F")
+            val lastNormalSeparator = current.lastIndexOf("/")
+
+            if (lastEncodedSeparator != -1 && lastEncodedSeparator > lastNormalSeparator) {
+                _currentFolderPath.value = current.substring(0, lastEncodedSeparator)
+            } else if (lastNormalSeparator != -1) {
+                _currentFolderPath.value = current.substring(0, lastNormalSeparator)
             } else {
-                val parent = current.substringBeforeLast("/")
-                _currentFolderPath.value = parent
+                // 找不到分隔符，异常情况，回根目录
+                _currentFolderPath.value = null
             }
         }
     }
 
-    // [新增] 切换文件夹展开状态
+    // 切换文件夹展开状态
     fun toggleFolderExpanded(path: String) {
         val current = _expandedFolders.value
         _expandedFolders.value = if (current.contains(path)) {
@@ -336,7 +400,9 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             val docFile = DocumentFile.fromTreeUri(context, uri)
             val name = docFile?.name ?: "Unknown"
-            val path = try { URLDecoder.decode(uri.toString(), "UTF-8") } catch(e: Exception) { uri.toString() }
+
+            // [修复] 保持 Raw URI，不要解码
+            val path = uri.toString()
 
             val folder = ScanFolder(path = path, name = name)
             repository.insertScanFolder(folder)
@@ -355,6 +421,7 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             _isScanning.value = true
             try {
+                // folder.path 是 Raw URI，直接 parse
                 val uri = Uri.parse(folder.path)
                 val docFile = DocumentFile.fromTreeUri(context, uri)
                 val existingPaths = repository.getAllPaths().toHashSet()
@@ -385,7 +452,9 @@ class LibraryViewModel @Inject constructor(
                 scanDirectory(file, results, existingPaths)
             } else {
                 val fileName = file.name ?: ""
-                val filePath = try { URLDecoder.decode(file.uri.toString(), "UTF-8") } catch(e: Exception) { file.uri.toString() }
+
+                // [修复] 使用 Raw URI
+                val filePath = file.uri.toString()
 
                 if (existingPaths.contains(filePath)) return@forEach
 
