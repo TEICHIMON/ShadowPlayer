@@ -41,52 +41,48 @@ class AudioPlayer @Inject constructor(
             exoPlayer = player
             player.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    Log.d(TAG, "onIsPlayingChanged: $isPlaying")
                     _isPlaying.value = isPlaying
                 }
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
-                    Log.d(TAG, "onPlaybackStateChanged: $playbackState")
                     if (playbackState == Player.STATE_ENDED) {
                         onPlaybackEnded?.invoke()
                     }
                     if (playbackState == Player.STATE_READY) {
-                        _duration.value = player.duration
-                        Log.d(TAG, "Duration: ${player.duration}")
+                        // 修复：确保 duration 为正数
+                        val realDuration = if (player.duration > 0) player.duration else 0L
+                        _duration.value = realDuration
+                        Log.d(TAG, "Duration updated: $realDuration")
                     }
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
                     Log.e(TAG, "Player error: ${error.message}", error)
-                    Log.e(TAG, "Error code: ${error.errorCode}")
                 }
             })
         }
     }
 
     fun loadAudio(path: String) {
-        Log.d(TAG, "Loading audio: $path")
         try {
+            // 重置时长，避免上一首的时长残留
+            _duration.value = 0L
             val player = getOrCreatePlayer()
             val uri = Uri.parse(path)
-            Log.d(TAG, "Parsed URI: $uri")
 
             val mediaItem = MediaItem.fromUri(uri)
             player.setMediaItem(mediaItem)
             player.prepare()
-            Log.d(TAG, "Audio prepared successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Error loading audio", e)
         }
     }
 
     fun play() {
-        Log.d(TAG, "Play called")
         exoPlayer?.play()
     }
 
     fun pause() {
-        Log.d(TAG, "Pause called")
         exoPlayer?.pause()
     }
 
@@ -104,7 +100,7 @@ class AudioPlayer @Inject constructor(
     }
 
     fun getDuration(): Long {
-        return exoPlayer?.duration ?: 0
+        return if ((exoPlayer?.duration ?: 0) > 0) exoPlayer!!.duration else 0
     }
 
     fun updatePosition() {

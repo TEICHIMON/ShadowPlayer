@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -28,9 +29,7 @@ import com.example.shadowplayer.data.entity.AudioFile
 import com.example.shadowplayer.data.entity.ScanFolder
 import com.example.shadowplayer.data.entity.Tag
 
-enum class LibraryTab {
-    ALL, FAVORITES, TAGS, FOLDERS
-}
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -40,28 +39,29 @@ fun LibraryScreen(
 ) {
     val audioFiles by viewModel.audioFiles.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
-    val scanFolders by viewModel.scanFolders.collectAsState()
+    val history by viewModel.history.collectAsState() // [新增]
     val rootTags by viewModel.rootTags.collectAsState()
     val allTags by viewModel.allTags.collectAsState()
     val selectedTagId by viewModel.selectedTagId.collectAsState()
     val audioFilesByTag by viewModel.audioFilesByTag.collectAsState()
-    val isScanning by viewModel.isScanning.collectAsState()
 
-    // 搜索与批量操作状态
+    // 文件夹视图状态
+    val scanFolders by viewModel.scanFolders.collectAsState()
+    val folderContent by viewModel.folderContent.collectAsState()
+    val currentFolderPath by viewModel.currentFolderPath.collectAsState()
+
+    val isScanning by viewModel.isScanning.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isSelectionMode by viewModel.isSelectionMode.collectAsState()
     val selectedIds by viewModel.selectedAudioIds.collectAsState()
 
     var selectedTab by remember { mutableStateOf(LibraryTab.ALL) }
-
-    // Dialog 状态
     var showAddTagDialog by remember { mutableStateOf(false) }
-    var showAddToTagDialog by remember { mutableStateOf<AudioFile?>(null) } // 单个操作
-    var showBatchAddTagDialog by remember { mutableStateOf(false) } // 批量操作
+    var showAddToTagDialog by remember { mutableStateOf<AudioFile?>(null) }
+    var showBatchAddTagDialog by remember { mutableStateOf(false) }
     var showTagManager by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
-
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -72,21 +72,21 @@ fun LibraryScreen(
         }
     }
 
-    // 确定当前视图的列表，用于全选功能
+    // 处理返回键：文件夹导航 > 标签管理 > 选择模式
+    BackHandler(enabled = isSelectionMode || showTagManager || (selectedTab == LibraryTab.FOLDERS && currentFolderPath != null)) {
+        when {
+            showTagManager -> showTagManager = false
+            isSelectionMode -> viewModel.exitSelectionMode()
+            selectedTab == LibraryTab.FOLDERS && currentFolderPath != null -> viewModel.navigateUp()
+        }
+    }
+
     val currentViewList = when (selectedTab) {
         LibraryTab.ALL -> audioFiles
         LibraryTab.FAVORITES -> favorites
+        LibraryTab.HISTORY -> history
         LibraryTab.TAGS -> audioFilesByTag
-        else -> emptyList()
-    }
-
-    // 在选择模式下，按返回键退出模式
-    BackHandler(enabled = isSelectionMode || showTagManager) {
-        if (showTagManager) {
-            showTagManager = false
-        } else {
-            viewModel.exitSelectionMode()
-        }
+        LibraryTab.FOLDERS -> folderContent.mapNotNull { (it as? FileSystemItem.File)?.audioFile } // 仅在文件夹模式下提取文件用于全选
     }
 
     if (showTagManager) {
@@ -101,7 +101,6 @@ fun LibraryScreen(
         Scaffold(
             topBar = {
                 if (isSelectionMode) {
-                    // [新增] 批量操作 TopBar
                     TopAppBar(
                         title = { Text("已选择 ${selectedIds.size} 项") },
                         navigationIcon = {
@@ -127,128 +126,75 @@ fun LibraryScreen(
                 }
             }
         ) { paddingValues ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-            ) {
-                // 搜索栏 (仅在非多选模式下显示，或者一直显示视需求而定，这里选择非多选模式显示以节省空间)
+            Column(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
                 if (!isSelectionMode) {
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { viewModel.search(it) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                         placeholder = { Text("搜索音频...") },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Default.Search,
-                                contentDescription = "搜索",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        trailingIcon = {
-                            if (searchQuery.isNotEmpty()) {
-                                IconButton(onClick = { viewModel.search("") }) {
-                                    Icon(Icons.Default.Close, contentDescription = "清空")
-                                }
-                            }
-                        },
+                        leadingIcon = { Icon(Icons.Default.Search, null) },
+                        trailingIcon = { if (searchQuery.isNotEmpty()) IconButton(onClick = { viewModel.search("") }) { Icon(Icons.Default.Close, null) } },
                         singleLine = true,
                         shape = MaterialTheme.shapes.medium
                     )
 
-                    // Tab 栏
                     ScrollableTabRow(
                         selectedTabIndex = selectedTab.ordinal,
                         modifier = Modifier.fillMaxWidth(),
                         edgePadding = 16.dp
                     ) {
-                        Tab(
-                            selected = selectedTab == LibraryTab.ALL,
-                            onClick = { selectedTab = LibraryTab.ALL },
-                            text = { Text("全部") }
-                        )
-                        Tab(
-                            selected = selectedTab == LibraryTab.FAVORITES,
-                            onClick = { selectedTab = LibraryTab.FAVORITES },
-                            text = { Text("收藏") }
-                        )
-                        Tab(
-                            selected = selectedTab == LibraryTab.TAGS,
-                            onClick = { selectedTab = LibraryTab.TAGS },
-                            text = { Text("标签") }
-                        )
-                        Tab(
-                            selected = selectedTab == LibraryTab.FOLDERS,
-                            onClick = { selectedTab = LibraryTab.FOLDERS },
-                            text = { Text("文件夹") }
-                        )
+                        Tab(selected = selectedTab == LibraryTab.ALL, onClick = { selectedTab = LibraryTab.ALL }, text = { Text("全部") })
+                        Tab(selected = selectedTab == LibraryTab.FAVORITES, onClick = { selectedTab = LibraryTab.FAVORITES }, text = { Text("收藏") })
+                        Tab(selected = selectedTab == LibraryTab.HISTORY, onClick = { selectedTab = LibraryTab.HISTORY }, text = { Text("历史") }) // [新增]
+                        Tab(selected = selectedTab == LibraryTab.TAGS, onClick = { selectedTab = LibraryTab.TAGS }, text = { Text("标签") })
+                        Tab(selected = selectedTab == LibraryTab.FOLDERS, onClick = { selectedTab = LibraryTab.FOLDERS }, text = { Text("文件夹") })
                     }
                 }
 
-                if (isScanning) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                }
+                if (isScanning) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
 
-                // 列表内容
                 when (selectedTab) {
-                    LibraryTab.ALL -> {
+                    LibraryTab.ALL, LibraryTab.FAVORITES, LibraryTab.HISTORY -> {
                         AudioFileList(
-                            audioFiles = audioFiles,
+                            audioFiles = if (selectedTab == LibraryTab.ALL) audioFiles else if (selectedTab == LibraryTab.FAVORITES) favorites else history,
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
-                            onFileClick = {
-                                if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it)
-                            },
+                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
                             onFileLongClick = { viewModel.enterSelectionMode(it.id) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
                             onDeleteClick = { viewModel.deleteAudio(it) },
                             onAddTagClick = { showAddToTagDialog = it }
                         )
                     }
-                    LibraryTab.FAVORITES -> {
-                        AudioFileList(
-                            audioFiles = favorites,
-                            isSelectionMode = isSelectionMode,
-                            selectedIds = selectedIds,
-                            onFileClick = {
-                                if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it)
-                            },
-                            onFileLongClick = { viewModel.enterSelectionMode(it.id) },
-                            onFavoriteClick = { viewModel.toggleFavorite(it) },
-                            onDeleteClick = null,
-                            onAddTagClick = { showAddToTagDialog = it }
-                        )
-                    }
                     LibraryTab.TAGS -> {
                         TagsSection(
-                            allTags = allTags,
-                            selectedTagId = selectedTagId,
-                            audioFiles = audioFilesByTag,
-                            isSelectionMode = isSelectionMode,
-                            selectedIds = selectedIds,
-                            onTagClick = { viewModel.selectTag(it) },
-                            onManageTags = { showTagManager = true },
-                            onFileClick = {
-                                if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it)
-                            },
+                            allTags = allTags, selectedTagId = selectedTagId, audioFiles = audioFilesByTag,
+                            isSelectionMode = isSelectionMode, selectedIds = selectedIds,
+                            onTagClick = { viewModel.selectTag(it) }, onManageTags = { showTagManager = true },
+                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
                             onFileLongClick = { viewModel.enterSelectionMode(it.id) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
                             onAddTagClick = { showAddToTagDialog = it }
                         )
                     }
                     LibraryTab.FOLDERS -> {
-                        if (isSelectionMode) {
-                            // 如果在文件夹Tab切换了模式(理论上不应该发生，因为文件夹Tab没法触发选择音频)，强制退出模式
-                            LaunchedEffect(Unit) { viewModel.exitSelectionMode() }
-                        }
-                        FoldersSection(
-                            folders = scanFolders,
-                            onAddFolder = { folderPickerLauncher.launch(null) },
-                            onRemoveFolder = { viewModel.removeScanFolder(it) },
-                            onScanFolder = { viewModel.scanFolder(it) },
+                        FoldersExplorerSection(
+                            currentPath = currentFolderPath,
+                            items = folderContent,
+                            isSelectionMode = isSelectionMode,
+                            selectedIds = selectedIds,
+                            onNavigate = { viewModel.navigateToFolder(it) },
+                            onNavigateUp = { viewModel.navigateUp() },
+                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
+                            onFileLongClick = { viewModel.enterSelectionMode(it.id) },
+                            onFavoriteClick = { viewModel.toggleFavorite(it) },
+                            onAddTagClick = { showAddToTagDialog = it },
+                            onAddScanFolder = { folderPickerLauncher.launch(null) },
+                            onRemoveScanFolder = { folder -> // 需要通过路径找到对应的 ScanFolder 对象
+                                val scanFolder = scanFolders.find { it.path == folder.path }
+                                scanFolder?.let { viewModel.removeScanFolder(it) }
+                            },
                             onScanAll = { viewModel.scanAllFolders() }
                         )
                     }
@@ -296,7 +242,77 @@ fun LibraryScreen(
     }
 }
 
+
+
 // ---------------- 辅助组件 ----------------
+
+// [新增] 文件夹浏览器视图
+@Composable
+fun FoldersExplorerSection(
+    currentPath: String?,
+    items: List<FileSystemItem>,
+    isSelectionMode: Boolean,
+    selectedIds: Set<Long>,
+    onNavigate: (String) -> Unit,
+    onNavigateUp: () -> Unit,
+    onFileClick: (AudioFile) -> Unit,
+    onFileLongClick: (AudioFile) -> Unit,
+    onFavoriteClick: (AudioFile) -> Unit,
+    onAddTagClick: (AudioFile) -> Unit,
+    onAddScanFolder: () -> Unit,
+    onRemoveScanFolder: (FileSystemItem.Folder) -> Unit,
+    onScanAll: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        // 顶部导航栏
+        if (currentPath == null) {
+            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onAddScanFolder) { Icon(Icons.Default.CreateNewFolder, null); Spacer(Modifier.width(8.dp)); Text("添加文件夹") }
+                OutlinedButton(onClick = onScanAll) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(8.dp)); Text("扫描全部") }
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(8.dp).clickable { onNavigateUp() },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.ArrowBack, null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(8.dp))
+                Text("返回上一级", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            }
+            Divider()
+        }
+
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(items) { item ->
+                when (item) {
+                    is FileSystemItem.Folder -> {
+                        ListItem(
+                            headlineContent = { Text(item.name) },
+                            leadingContent = { Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.secondary) },
+                            modifier = Modifier.clickable { onNavigate(item.path) },
+                            trailingContent = if (currentPath == null) {
+                                { IconButton(onClick = { onRemoveScanFolder(item) }) { Icon(Icons.Default.Delete, null) } }
+                            } else null
+                        )
+                    }
+                    is FileSystemItem.File -> {
+                        AudioFileItem(
+                            audioFile = item.audioFile,
+                            isSelectionMode = isSelectionMode,
+                            isSelected = selectedIds.contains(item.audioFile.id),
+                            onClick = { onFileClick(item.audioFile) },
+                            onLongClick = { onFileLongClick(item.audioFile) },
+                            onFavoriteClick = { onFavoriteClick(item.audioFile) },
+                            onDeleteClick = null, // 文件夹视图暂不支持直接删除文件
+                            onAddTagClick = onAddTagClick
+                        )
+                    }
+                }
+                Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -421,6 +437,8 @@ fun AudioFileList(
     }
 }
 
+// 修改 AudioFileItem 以支持跑马灯
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AudioFileItem(
@@ -434,81 +452,50 @@ fun AudioFileItem(
     onAddTagClick: ((AudioFile) -> Unit)?
 ) {
     var showMenu by remember { mutableStateOf(false) }
-    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     val haptic = LocalHapticFeedback.current
-
-    val backgroundColor = if (isSelected) {
-        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-    } else {
-        MaterialTheme.colorScheme.surface
-    }
+    val backgroundColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surface
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    if (isSelectionMode) {
-                        // 如果已经在选择模式，长按也是切换选择状态
-                        onClick()
-                    } else {
-                        // 如果不在选择模式，长按触发进入选择模式
-                        onLongClick()
-                    }
-                }
-            ),
+        modifier = Modifier.fillMaxWidth().combinedClickable(
+            onClick = onClick,
+            onLongClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                if (isSelectionMode) onClick() else onLongClick()
+            }
+        ),
         colors = CardDefaults.cardColors(containerColor = backgroundColor)
     ) {
-        Box {
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (isSelectionMode) {
-                    Checkbox(checked = isSelected, onCheckedChange = { onClick() })
-                } else {
-                    Icon(Icons.Default.AudioFile, null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
+        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (isSelectionMode) {
+                Checkbox(checked = isSelected, onCheckedChange = { onClick() })
+            } else {
+                Icon(Icons.Default.AudioFile, null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                // [修改] 使用 basicMarquee 显示完整文件名
+                Text(
+                    text = audioFile.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    modifier = Modifier.basicMarquee() // 跑马灯效果
+                )
+                Row {
+                    if (audioFile.lrcPath != null) { Text("有字幕", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)) }
+                    if (audioFile.playCount > 0) Text("播放${audioFile.playCount}次", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = audioFile.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Row {
-                        if (audioFile.lrcPath != null) { Text("有字幕", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)) }
-                        if (audioFile.playCount > 0) Text("播放${audioFile.playCount}次", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-
-                // 非选择模式下显示操作按钮
-                if (!isSelectionMode) {
-                    IconButton(onClick = onFavoriteClick) { Icon(if (audioFile.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, "收藏", tint = if (audioFile.isFavorite) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
-
-                    // 三点菜单
-                    Box {
-                        IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Default.MoreVert, "更多")
-                        }
-                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                            onAddTagClick?.let {
-                                DropdownMenuItem(text = { Text("添加到标签") }, onClick = { showMenu = false; it(audioFile) }, leadingIcon = { Icon(Icons.Default.Label, null) })
-                            }
-                            onDeleteClick?.let {
-                                DropdownMenuItem(text = { Text("删除记录") }, onClick = { showMenu = false; showDeleteConfirmDialog = true }, leadingIcon = { Icon(Icons.Default.Delete, null) })
-                            }
-                        }
+            }
+            if (!isSelectionMode) {
+                IconButton(onClick = onFavoriteClick) { Icon(if (audioFile.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null, tint = if (audioFile.isFavorite) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
+                Box {
+                    IconButton(onClick = { showMenu = true }) { Icon(Icons.Default.MoreVert, null) }
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        onAddTagClick?.let { DropdownMenuItem(text = { Text("添加到标签") }, onClick = { showMenu = false; it(audioFile) }) }
+                        onDeleteClick?.let { DropdownMenuItem(text = { Text("删除记录") }, onClick = { showMenu = false; it(audioFile) }) }
                     }
                 }
             }
         }
-    }
-    if (showDeleteConfirmDialog) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirmDialog = false },
-            title = { Text("确认删除") },
-            text = { Text("确定要从列表中移除音频 \"${audioFile.title}\" 吗？") },
-            confirmButton = { TextButton(onClick = { onDeleteClick?.invoke(audioFile); showDeleteConfirmDialog = false }) { Text("删除", color = MaterialTheme.colorScheme.error) } },
-            dismissButton = { TextButton(onClick = { showDeleteConfirmDialog = false }) { Text("取消") } }
-        )
     }
 }
 

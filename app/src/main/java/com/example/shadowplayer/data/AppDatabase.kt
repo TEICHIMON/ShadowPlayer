@@ -13,7 +13,7 @@ import com.example.shadowplayer.data.entity.*
         Bookmark::class,
         ScanFolder::class
     ],
-    version = 1,
+    version = 2, // 升级版本号
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

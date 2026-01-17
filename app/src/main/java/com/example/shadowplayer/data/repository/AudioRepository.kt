@@ -19,6 +19,9 @@ class AudioRepository @Inject constructor(
     // AudioFile
     fun getAllAudioFiles(): Flow<List<AudioFile>> = audioFileDao.getAllAudioFiles()
     fun getFavorites(): Flow<List<AudioFile>> = audioFileDao.getFavorites()
+    // [新增] 历史记录
+    fun getHistory(): Flow<List<AudioFile>> = audioFileDao.getHistory()
+
     suspend fun getAudioById(id: Long): AudioFile? = audioFileDao.getById(id)
     suspend fun getAudioByPath(path: String): AudioFile? = audioFileDao.getByPath(path)
     suspend fun insertAudio(audioFile: AudioFile): Long = audioFileDao.insert(audioFile)
@@ -26,15 +29,14 @@ class AudioRepository @Inject constructor(
     suspend fun updateAudio(audioFile: AudioFile) = audioFileDao.update(audioFile)
     suspend fun updateLastPosition(id: Long, position: Long) = audioFileDao.updateLastPosition(id, position)
     suspend fun incrementPlayCount(id: Long) = audioFileDao.incrementPlayCount(id)
+    // [新增] 更新播放时间
+    suspend fun updateLastPlayedAt(id: Long, timestamp: Long) = audioFileDao.updateLastPlayedAt(id, timestamp)
+
     suspend fun updateFavorite(id: Long, isFavorite: Boolean) = audioFileDao.updateFavorite(id, isFavorite)
     suspend fun updateLrcOffset(id: Long, offset: Long) = audioFileDao.updateLrcOffset(id, offset)
     suspend fun updateDuration(id: Long, duration: Long) = audioFileDao.updateDuration(id, duration)
     suspend fun deleteAudio(audioFile: AudioFile) = audioFileDao.delete(audioFile)
-
-    // [新增] 级联删除：删除特定文件夹下的所有音频
     suspend fun deleteAudioFilesByPathPrefix(pathPrefix: String) = audioFileDao.deleteByPathPrefix(pathPrefix)
-
-    // [新增] 批量删除音频
     suspend fun deleteAudios(ids: List<Long>) = audioFileDao.deleteByIds(ids)
 
     // Tags
@@ -45,13 +47,8 @@ class AudioRepository @Inject constructor(
     suspend fun updateTag(tag: Tag) = tagDao.update(tag)
     suspend fun deleteTag(tag: Tag) = tagDao.delete(tag)
     suspend fun addTagToAudio(audioId: Long, tagId: Long) = tagDao.addTagToAudio(AudioTag(audioId, tagId))
-
-    // [新增] 批量添加标签
-    suspend fun addTagToAudios(audioIds: List<Long>, tagId: Long) {
-        audioIds.forEach { audioId ->
-            tagDao.addTagToAudio(AudioTag(audioId, tagId))
-        }
-    }
+    suspend fun addTagToAudios(audioIds: List<Long>, tagId: Long) = tagDao.addTagToAudio(AudioTag(audioIds.first(), tagId)) // 修正：这里你需要遍历或者Dao支持List，简单起见用 loop
+        .run { audioIds.forEach { tagDao.addTagToAudio(AudioTag(it, tagId)) } }
 
     suspend fun removeTagFromAudio(audioId: Long, tagId: Long) = tagDao.removeTagFromAudio(AudioTag(audioId, tagId))
     fun getAudioFilesByTag(tagId: Long): Flow<List<AudioFile>> = tagDao.getAudioFilesByTag(tagId)
@@ -67,11 +64,8 @@ class AudioRepository @Inject constructor(
 
     // Scan Folders
     fun getAllScanFolders(): Flow<List<ScanFolder>> = scanFolderDao.getAllFolders()
-
     suspend fun getAllPaths(): List<String> = audioFileDao.getAllPaths()
-
     suspend fun insertAllIgnore(audioFiles: List<AudioFile>) = audioFileDao.insertAllIgnore(audioFiles)
-
     suspend fun insertScanFolder(folder: ScanFolder): Long = scanFolderDao.insert(folder)
     suspend fun deleteScanFolder(folder: ScanFolder) = scanFolderDao.delete(folder)
 }

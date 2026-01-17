@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -33,45 +34,26 @@ fun PlayerScreen(
     val settings by viewModel.settings.collectAsState()
     val currentAudioFile by viewModel.currentAudioFile.collectAsState()
 
-    // --- [新增状态：UI 交互层面的拖拽状态] ---
     var isDragging by remember { mutableStateOf(false) }
     var dragPosition by remember { mutableLongStateOf(0L) }
 
-    // --- [逻辑：计算用于显示的“当前时间”和“高亮索引”] ---
-    // 如果正在拖拽，显示拖拽的时间；否则显示播放器真实时间
     val displayPosition = if (isDragging) dragPosition else playerState.currentPosition
-
-    // 计算应该高亮哪一句字幕
-    // 如果正在拖拽，根据 dragPosition 在 sentences 中查找；否则直接用播放器的 currentIndex
     val targetIndex = if (isDragging) {
-        if (playerState.sentences.isNotEmpty()) {
-            LrcParser.findSentenceIndex(playerState.sentences, dragPosition)
-        } else {
-            -1
-        }
-    } else {
-        playerState.currentIndex
-    }
+        if (playerState.sentences.isNotEmpty()) LrcParser.findSentenceIndex(playerState.sentences, dragPosition) else -1
+    } else playerState.currentIndex
 
-    // 绑定物理按键
     val context = LocalContext.current
     DisposableEffect(Unit) {
         val activity = context as? MainActivity
         activity?.onVolumeUp = { viewModel.previousSentence() }
         activity?.onVolumeDown = { viewModel.nextSentence() }
-
         onDispose {
             activity?.onVolumeUp = null
             activity?.onVolumeDown = null
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        // 标题
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text(
             text = currentAudioFile?.title ?: "未选择音频",
             style = MaterialTheme.typography.titleLarge,
@@ -81,95 +63,47 @@ fun PlayerScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // 字幕列表
         if (settings.showSubtitle && playerState.sentences.isNotEmpty()) {
             SubtitleList(
                 sentences = playerState.sentences,
-                currentIndex = targetIndex, // 传入计算后的索引，实现拖拽时的预览高亮
-                onSentenceClick = { index ->
-                    viewModel.seekToSentence(index)
-                },
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
+                currentIndex = targetIndex,
+                onSentenceClick = { viewModel.seekToSentence(it) },
+                modifier = Modifier.weight(1f).fillMaxWidth()
             )
         } else {
-            // 无字幕或隐藏字幕时显示当前句
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentAlignment = Alignment.Center
-            ) {
-                // 这里也使用 targetIndex 来显示拖拽时的预览文本
-                val currentText = if (targetIndex in playerState.sentences.indices) {
-                    playerState.sentences[targetIndex].text
-                } else null
-
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                val currentText = if (targetIndex in playerState.sentences.indices) playerState.sentences[targetIndex].text else null
                 if (currentText != null && settings.showSubtitle) {
-                    Text(
-                        text = currentText,
-                        style = MaterialTheme.typography.headlineSmall,
-                        textAlign = TextAlign.Center
-                    )
+                    // [修改] 允许复制单个大字幕
+                    SelectionContainer {
+                        Text(text = currentText, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
+                    }
                 } else {
-                    Text(
-                        text = if (currentAudioFile == null) "请从文件库选择音频" else "无字幕",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Text(text = if (currentAudioFile == null) "请从文件库选择音频" else "无字幕", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
 
-        // 跟读倒计时
         if (playerState.isInInterval) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
-            ) {
-                Text(
-                    text = "请跟读 (${playerState.intervalCountdown}秒)",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.titleMedium
-                )
+            Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                Text(text = "请跟读 (${playerState.intervalCountdown}秒)", modifier = Modifier.fillMaxWidth().padding(16.dp), textAlign = TextAlign.Center, style = MaterialTheme.typography.titleMedium)
             }
         }
 
-        // 进度条
         ProgressSection(
-            currentPosition = displayPosition, // 传入用于显示的时间（包含拖拽预览）
+            currentPosition = displayPosition,
             totalDuration = playerState.totalDuration,
-            onSeek = { position ->
-                viewModel.seekTo(position)
-                isDragging = false // 松手后结束拖拽状态
-            },
-            onPreview = { position ->
-                isDragging = true // 开始拖拽
-                dragPosition = position // 更新拖拽位置
-            }
+            onSeek = { position -> viewModel.seekTo(position); isDragging = false },
+            onPreview = { position -> isDragging = true; dragPosition = position }
         )
-
         Spacer(modifier = Modifier.height(8.dp))
-
-        // 播放控制
         PlaybackControls(
             isPlaying = playerState.isPlaying,
             onPlayPause = { viewModel.togglePlayPause() },
             onPrevious = { viewModel.previousSentence() },
             onNext = { viewModel.nextSentence() }
         )
-
         Spacer(modifier = Modifier.height(8.dp))
-
-        // 设置栏
         SettingsBar(
             settings = settings,
             currentRepeat = playerState.currentRepeat,
@@ -190,34 +124,23 @@ fun SubtitleList(
 ) {
     val listState = rememberLazyListState()
 
-    // 自动滚动到当前句 (无论是播放还是拖拽预览)
     LaunchedEffect(currentIndex) {
         if (currentIndex >= 0 && currentIndex < sentences.size) {
-            listState.animateScrollToItem(
-                index = maxOf(0, currentIndex - 2)
-            )
+            listState.animateScrollToItem(index = maxOf(0, currentIndex - 2))
         }
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
+    LazyColumn(state = listState, modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         itemsIndexed(sentences) { index, sentence ->
             val isCurrentSentence = index == currentIndex
+            // [修改] 实现复制功能
+            // 外部 Row 处理点击跳转，内部 SelectionContainer 处理文字选择
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
-                    .background(
-                        if (isCurrentSentence) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.surface
-                        }
-                    )
-                    .clickable { onSentenceClick(index) }
+                    .background(if (isCurrentSentence) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface)
+                    .clickable { onSentenceClick(index) } // 点击整行跳转
                     .padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -228,12 +151,15 @@ fun SubtitleList(
                     modifier = Modifier.width(50.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = sentence.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (isCurrentSentence) FontWeight.Bold else FontWeight.Normal,
-                    modifier = Modifier.weight(1f)
-                )
+                // 包裹文字以支持复制
+                SelectionContainer {
+                    Text(
+                        text = sentence.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (isCurrentSentence) FontWeight.Bold else FontWeight.Normal,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
         }
     }
