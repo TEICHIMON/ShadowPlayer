@@ -4,6 +4,9 @@ import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -22,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -29,17 +34,16 @@ import com.example.shadowplayer.data.entity.AudioFile
 import com.example.shadowplayer.data.entity.ScanFolder
 import com.example.shadowplayer.data.entity.Tag
 
-
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
     onFileSelected: (AudioFile) -> Unit,
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
-    val audioFiles by viewModel.audioFiles.collectAsState()
+    // [修改] 记录分组
+    val recordGroups by viewModel.recordGroups.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
-    val history by viewModel.history.collectAsState() // [新增]
+    val history by viewModel.history.collectAsState()
     val rootTags by viewModel.rootTags.collectAsState()
     val allTags by viewModel.allTags.collectAsState()
     val selectedTagId by viewModel.selectedTagId.collectAsState()
@@ -49,13 +53,18 @@ fun LibraryScreen(
     val scanFolders by viewModel.scanFolders.collectAsState()
     val folderContent by viewModel.folderContent.collectAsState()
     val currentFolderPath by viewModel.currentFolderPath.collectAsState()
+    val expandedFolders by viewModel.expandedFolders.collectAsState()
 
     val isScanning by viewModel.isScanning.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isSelectionMode by viewModel.isSelectionMode.collectAsState()
     val selectedIds by viewModel.selectedAudioIds.collectAsState()
 
-    var selectedTab by remember { mutableStateOf(LibraryTab.ALL) }
+    // [新增] 音频详情状态
+    val audioDetails by viewModel.audioDetailsState.collectAsState()
+
+    // [修改] 默认Tab改为RECORDS
+    var selectedTab by remember { mutableStateOf(LibraryTab.RECORDS) }
     var showAddTagDialog by remember { mutableStateOf(false) }
     var showAddToTagDialog by remember { mutableStateOf<AudioFile?>(null) }
     var showBatchAddTagDialog by remember { mutableStateOf(false) }
@@ -72,7 +81,7 @@ fun LibraryScreen(
         }
     }
 
-    // 处理返回键：文件夹导航 > 标签管理 > 选择模式
+    // 处理返回键
     BackHandler(enabled = isSelectionMode || showTagManager || (selectedTab == LibraryTab.FOLDERS && currentFolderPath != null)) {
         when {
             showTagManager -> showTagManager = false
@@ -81,12 +90,13 @@ fun LibraryScreen(
         }
     }
 
+    // 当前视图的音频列表（用于全选）
     val currentViewList = when (selectedTab) {
-        LibraryTab.ALL -> audioFiles
+        LibraryTab.RECORDS -> recordGroups.flatMap { it.audioFiles }
         LibraryTab.FAVORITES -> favorites
         LibraryTab.HISTORY -> history
         LibraryTab.TAGS -> audioFilesByTag
-        LibraryTab.FOLDERS -> folderContent.mapNotNull { (it as? FileSystemItem.File)?.audioFile } // 仅在文件夹模式下提取文件用于全选
+        LibraryTab.FOLDERS -> folderContent.mapNotNull { (it as? FileSystemItem.File)?.audioFile }
     }
 
     if (showTagManager) {
@@ -144,9 +154,10 @@ fun LibraryScreen(
                         modifier = Modifier.fillMaxWidth(),
                         edgePadding = 16.dp
                     ) {
-                        Tab(selected = selectedTab == LibraryTab.ALL, onClick = { selectedTab = LibraryTab.ALL }, text = { Text("全部") })
+                        // [修改] 把"全部"改成"记录"
+                        Tab(selected = selectedTab == LibraryTab.RECORDS, onClick = { selectedTab = LibraryTab.RECORDS }, text = { Text("记录") })
                         Tab(selected = selectedTab == LibraryTab.FAVORITES, onClick = { selectedTab = LibraryTab.FAVORITES }, text = { Text("收藏") })
-                        Tab(selected = selectedTab == LibraryTab.HISTORY, onClick = { selectedTab = LibraryTab.HISTORY }, text = { Text("历史") }) // [新增]
+                        Tab(selected = selectedTab == LibraryTab.HISTORY, onClick = { selectedTab = LibraryTab.HISTORY }, text = { Text("历史") })
                         Tab(selected = selectedTab == LibraryTab.TAGS, onClick = { selectedTab = LibraryTab.TAGS }, text = { Text("标签") })
                         Tab(selected = selectedTab == LibraryTab.FOLDERS, onClick = { selectedTab = LibraryTab.FOLDERS }, text = { Text("文件夹") })
                     }
@@ -155,13 +166,37 @@ fun LibraryScreen(
                 if (isScanning) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
 
                 when (selectedTab) {
-                    LibraryTab.ALL, LibraryTab.FAVORITES, LibraryTab.HISTORY -> {
-                        AudioFileList(
-                            audioFiles = if (selectedTab == LibraryTab.ALL) audioFiles else if (selectedTab == LibraryTab.FAVORITES) favorites else history,
+                    // [修改] 记录Tab - 按文件夹分组显示
+                    LibraryTab.RECORDS -> {
+                        RecordsGroupedSection(
+                            groups = recordGroups,
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
                             onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
-                            onFileLongClick = { viewModel.enterSelectionMode(it.id) },
+                            onFileLongClick = { viewModel.showAudioDetails(it) },
+                            onFavoriteClick = { viewModel.toggleFavorite(it) },
+                            onAddTagClick = { showAddToTagDialog = it }
+                        )
+                    }
+                    LibraryTab.FAVORITES -> {
+                        AudioFileList(
+                            audioFiles = favorites,
+                            isSelectionMode = isSelectionMode,
+                            selectedIds = selectedIds,
+                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
+                            onFileLongClick = { viewModel.showAudioDetails(it) },
+                            onFavoriteClick = { viewModel.toggleFavorite(it) },
+                            onDeleteClick = { viewModel.deleteAudio(it) },
+                            onAddTagClick = { showAddToTagDialog = it }
+                        )
+                    }
+                    LibraryTab.HISTORY -> {
+                        AudioFileList(
+                            audioFiles = history,
+                            isSelectionMode = isSelectionMode,
+                            selectedIds = selectedIds,
+                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
+                            onFileLongClick = { viewModel.showAudioDetails(it) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
                             onDeleteClick = { viewModel.deleteAudio(it) },
                             onAddTagClick = { showAddToTagDialog = it }
@@ -169,11 +204,15 @@ fun LibraryScreen(
                     }
                     LibraryTab.TAGS -> {
                         TagsSection(
-                            allTags = allTags, selectedTagId = selectedTagId, audioFiles = audioFilesByTag,
-                            isSelectionMode = isSelectionMode, selectedIds = selectedIds,
-                            onTagClick = { viewModel.selectTag(it) }, onManageTags = { showTagManager = true },
+                            allTags = allTags,
+                            selectedTagId = selectedTagId,
+                            audioFiles = audioFilesByTag,
+                            isSelectionMode = isSelectionMode,
+                            selectedIds = selectedIds,
+                            onTagClick = { viewModel.selectTag(it) },
+                            onManageTags = { showTagManager = true },
                             onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
-                            onFileLongClick = { viewModel.enterSelectionMode(it.id) },
+                            onFileLongClick = { viewModel.showAudioDetails(it) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
                             onAddTagClick = { showAddToTagDialog = it }
                         )
@@ -182,16 +221,18 @@ fun LibraryScreen(
                         FoldersExplorerSection(
                             currentPath = currentFolderPath,
                             items = folderContent,
+                            expandedFolders = expandedFolders,
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
                             onNavigate = { viewModel.navigateToFolder(it) },
                             onNavigateUp = { viewModel.navigateUp() },
+                            onToggleExpand = { viewModel.toggleFolderExpanded(it) },
                             onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
-                            onFileLongClick = { viewModel.enterSelectionMode(it.id) },
+                            onFileLongClick = { viewModel.showAudioDetails(it) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
                             onAddTagClick = { showAddToTagDialog = it },
                             onAddScanFolder = { folderPickerLauncher.launch(null) },
-                            onRemoveScanFolder = { folder -> // 需要通过路径找到对应的 ScanFolder 对象
+                            onRemoveScanFolder = { folder ->
                                 val scanFolder = scanFolders.find { it.path == folder.path }
                                 scanFolder?.let { viewModel.removeScanFolder(it) }
                             },
@@ -228,10 +269,10 @@ fun LibraryScreen(
         )
     }
 
-    // [新增] 批量添加标签
+    // 批量添加标签
     if (showBatchAddTagDialog) {
         AddToTagDialog(
-            audioFile = AudioFile(0, "", "", 0), // 这里的 file 仅作占位，不影响 UI 显示
+            audioFile = AudioFile(0, "", "", 0),
             tags = allTags,
             onDismiss = { showBatchAddTagDialog = false },
             onTagSelected = { tag ->
@@ -240,21 +281,326 @@ fun LibraryScreen(
             }
         )
     }
+
+    // [新增] 音频详情对话框
+    audioDetails?.let { details ->
+        AudioDetailsDialog(
+            details = details,
+            onDismiss = { viewModel.dismissAudioDetails() }
+        )
+    }
 }
 
+// [新增] 音频详情对话框
+@Composable
+fun AudioDetailsDialog(
+    details: AudioFileDetails,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.AudioFile, contentDescription = null) },
+        title = {
+            Text(
+                text = details.audioFile.title,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                DetailRow("文件夹", details.parentFolder)
+                DetailRow("时长", details.formattedDuration)
+                DetailRow("大小", details.formattedSize)
+                DetailRow("字幕", if (details.hasSubtitle) "有" else "无")
+                DetailRow("播放次数", "${details.audioFile.playCount} 次")
+                if (details.audioFile.lastPlayedAt != null) {
+                    DetailRow("最近播放", formatTimestamp(details.audioFile.lastPlayedAt))
+                }
 
+                // 文件路径（可滚动）
+                Text(
+                    text = "文件路径",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = details.audioFile.path,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(8.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        }
+    )
+}
 
-// ---------------- 辅助组件 ----------------
+@Composable
+private fun DetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
 
-// [新增] 文件夹浏览器视图
+private fun formatTimestamp(timestamp: Long): String {
+    val sdf = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+    return sdf.format(java.util.Date(timestamp))
+}
+
+// [新增] 记录Tab - 按文件夹分组显示
+@Composable
+fun RecordsGroupedSection(
+    groups: List<FolderGroup>,
+    isSelectionMode: Boolean,
+    selectedIds: Set<Long>,
+    onFileClick: (AudioFile) -> Unit,
+    onFileLongClick: (AudioFile) -> Unit,
+    onFavoriteClick: (AudioFile) -> Unit,
+    onAddTagClick: (AudioFile) -> Unit
+) {
+    if (groups.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    Icons.Default.History,
+                    contentDescription = null,
+                    modifier = Modifier.size(64.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "暂无播放记录",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    } else {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            items(groups, key = { it.folderPath }) { group ->
+                FolderGroupCard(
+                    group = group,
+                    isSelectionMode = isSelectionMode,
+                    selectedIds = selectedIds,
+                    onFileClick = onFileClick,
+                    onFileLongClick = onFileLongClick,
+                    onFavoriteClick = onFavoriteClick,
+                    onAddTagClick = onAddTagClick
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun FolderGroupCard(
+    group: FolderGroup,
+    isSelectionMode: Boolean,
+    selectedIds: Set<Long>,
+    onFileClick: (AudioFile) -> Unit,
+    onFileLongClick: (AudioFile) -> Unit,
+    onFavoriteClick: (AudioFile) -> Unit,
+    onAddTagClick: (AudioFile) -> Unit
+) {
+    var expanded by remember { mutableStateOf(true) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column {
+            // 文件夹标题
+            Surface(
+                onClick = { expanded = !expanded },
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Folder,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = group.folderName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "${group.audioFiles.size} 首音频",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Icon(
+                        if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (expanded) "收起" else "展开"
+                    )
+                }
+            }
+
+            // 音频列表
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically(),
+                exit = shrinkVertically()
+            ) {
+                Column {
+                    group.audioFiles.forEach { audioFile ->
+                        CompactAudioFileItem(
+                            audioFile = audioFile,
+                            isSelectionMode = isSelectionMode,
+                            isSelected = selectedIds.contains(audioFile.id),
+                            onClick = { onFileClick(audioFile) },
+                            onLongClick = { onFileLongClick(audioFile) },
+                            onFavoriteClick = { onFavoriteClick(audioFile) },
+                            onAddTagClick = { onAddTagClick(audioFile) }
+                        )
+                        if (audioFile != group.audioFiles.last()) {
+                            Divider(
+                                modifier = Modifier.padding(start = 56.dp),
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 紧凑型音频项
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun CompactAudioFileItem(
+    audioFile: AudioFile,
+    isSelectionMode: Boolean,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onFavoriteClick: () -> Unit,
+    onAddTagClick: () -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val backgroundColor = if (isSelected)
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+    else
+        MaterialTheme.colorScheme.surface
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(backgroundColor)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onLongClick()
+                }
+            )
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (isSelectionMode) {
+            Checkbox(
+                checked = isSelected,
+                onCheckedChange = { onClick() },
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+        } else {
+            Icon(
+                Icons.Default.MusicNote,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+        }
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = audioFile.title,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row {
+                if (audioFile.lrcPath != null) {
+                    Text(
+                        "字幕",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                if (audioFile.playCount > 0) {
+                    Text(
+                        "${audioFile.playCount}次",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        if (!isSelectionMode) {
+            IconButton(
+                onClick = onFavoriteClick,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    if (audioFile.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = if (audioFile.isFavorite) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+// [修改] 文件夹浏览器视图 - 显示音频数量
 @Composable
 fun FoldersExplorerSection(
     currentPath: String?,
     items: List<FileSystemItem>,
+    expandedFolders: Set<String>,
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
     onNavigate: (String) -> Unit,
     onNavigateUp: () -> Unit,
+    onToggleExpand: (String) -> Unit,
     onFileClick: (AudioFile) -> Unit,
     onFileLongClick: (AudioFile) -> Unit,
     onFavoriteClick: (AudioFile) -> Unit,
@@ -266,53 +612,140 @@ fun FoldersExplorerSection(
     Column(modifier = Modifier.fillMaxSize()) {
         // 顶部导航栏
         if (currentPath == null) {
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onAddScanFolder) { Icon(Icons.Default.CreateNewFolder, null); Spacer(Modifier.width(8.dp)); Text("添加文件夹") }
-                OutlinedButton(onClick = onScanAll) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(8.dp)); Text("扫描全部") }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(onClick = onAddScanFolder) {
+                    Icon(Icons.Default.CreateNewFolder, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("添加文件夹")
+                }
+                OutlinedButton(onClick = onScanAll) {
+                    Icon(Icons.Default.Refresh, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("扫描全部")
+                }
             }
         } else {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(8.dp).clickable { onNavigateUp() },
-                verticalAlignment = Alignment.CenterVertically
+            Surface(
+                onClick = onNavigateUp,
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
             ) {
-                Icon(Icons.Default.ArrowBack, null, tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(8.dp))
-                Text("返回上一级", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.ArrowBack,
+                        null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        "返回上一级",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
-            Divider()
         }
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(items) { item ->
-                when (item) {
-                    is FileSystemItem.Folder -> {
-                        ListItem(
-                            headlineContent = { Text(item.name) },
-                            leadingContent = { Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.secondary) },
-                            modifier = Modifier.clickable { onNavigate(item.path) },
-                            trailingContent = if (currentPath == null) {
-                                { IconButton(onClick = { onRemoveScanFolder(item) }) { Icon(Icons.Default.Delete, null) } }
-                            } else null
-                        )
+        if (items.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    text = if (currentPath == null) "点击上方按钮添加音频文件夹" else "此文件夹为空",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 16.dp)
+            ) {
+                items(items) { item ->
+                    when (item) {
+                        is FileSystemItem.Folder -> {
+                            FolderListItem(
+                                folder = item,
+                                isRoot = currentPath == null,
+                                onNavigate = onNavigate,
+                                onRemove = if (currentPath == null) {
+                                    { onRemoveScanFolder(item) }
+                                } else null
+                            )
+                        }
+                        is FileSystemItem.File -> {
+                            CompactAudioFileItem(
+                                audioFile = item.audioFile,
+                                isSelectionMode = isSelectionMode,
+                                isSelected = selectedIds.contains(item.audioFile.id),
+                                onClick = { onFileClick(item.audioFile) },
+                                onLongClick = { onFileLongClick(item.audioFile) },
+                                onFavoriteClick = { onFavoriteClick(item.audioFile) },
+                                onAddTagClick = { onAddTagClick(item.audioFile) }
+                            )
+                        }
                     }
-                    is FileSystemItem.File -> {
-                        AudioFileItem(
-                            audioFile = item.audioFile,
-                            isSelectionMode = isSelectionMode,
-                            isSelected = selectedIds.contains(item.audioFile.id),
-                            onClick = { onFileClick(item.audioFile) },
-                            onLongClick = { onFileLongClick(item.audioFile) },
-                            onFavoriteClick = { onFavoriteClick(item.audioFile) },
-                            onDeleteClick = null, // 文件夹视图暂不支持直接删除文件
-                            onAddTagClick = onAddTagClick
-                        )
-                    }
+                    Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                 }
-                Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
             }
         }
     }
 }
+
+@Composable
+fun FolderListItem(
+    folder: FileSystemItem.Folder,
+    isRoot: Boolean,
+    onNavigate: (String) -> Unit,
+    onRemove: (() -> Unit)?
+) {
+    ListItem(
+        headlineContent = {
+            Text(
+                folder.name,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        supportingContent = {
+            Text(
+                "${folder.audioCount} 首音频",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        leadingContent = {
+            Icon(
+                Icons.Default.Folder,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.secondary
+            )
+        },
+        trailingContent = {
+            Row {
+                if (onRemove != null) {
+                    IconButton(onClick = onRemove) {
+                        Icon(Icons.Default.Delete, contentDescription = "删除")
+                    }
+                }
+                Icon(
+                    Icons.Default.ChevronRight,
+                    contentDescription = "进入",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        modifier = Modifier.clickable { onNavigate(folder.path) }
+    )
+}
+
+// ---------------- 其他组件保持不变 ----------------
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -400,6 +833,7 @@ fun buildTagTree(tags: List<Tag>): List<Pair<Tag, Int>> {
     return result
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AudioFileList(
     audioFiles: List<AudioFile>,
@@ -437,8 +871,6 @@ fun AudioFileList(
     }
 }
 
-// 修改 AudioFileItem 以支持跑马灯
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AudioFileItem(
@@ -460,7 +892,7 @@ fun AudioFileItem(
             onClick = onClick,
             onLongClick = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                if (isSelectionMode) onClick() else onLongClick()
+                onLongClick()
             }
         ),
         colors = CardDefaults.cardColors(containerColor = backgroundColor)
@@ -473,12 +905,11 @@ fun AudioFileItem(
             }
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                // [修改] 使用 basicMarquee 显示完整文件名
                 Text(
                     text = audioFile.title,
                     style = MaterialTheme.typography.bodyLarge,
                     maxLines = 1,
-                    modifier = Modifier.basicMarquee() // 跑马灯效果
+                    modifier = Modifier.basicMarquee()
                 )
                 Row {
                     if (audioFile.lrcPath != null) { Text("有字幕", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)) }
@@ -557,31 +988,9 @@ fun TagsSection(
             onFileClick = onFileClick,
             onFileLongClick = onFileLongClick,
             onFavoriteClick = onFavoriteClick,
-            onDeleteClick = if(!isSelectionMode) {{ /* 删除由外部处理 */ }} else null, // TagsSection 的删除暂不支持单项删除或需传递
+            onDeleteClick = null,
             onAddTagClick = if(!isSelectionMode) onAddTagClick else null
         )
-    }
-}
-
-@Composable
-fun FoldersSection(folders: List<ScanFolder>, onAddFolder: () -> Unit, onRemoveFolder: (ScanFolder) -> Unit, onScanFolder: (ScanFolder) -> Unit, onScanAll: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onAddFolder) { Icon(Icons.Default.CreateNewFolder, null); Spacer(Modifier.width(8.dp)); Text("添加文件夹") }
-            OutlinedButton(onClick = onScanAll) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(8.dp)); Text("扫描全部") }
-        }
-        LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(folders, key = { it.id }) { folder ->
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(12.dp))
-                        Text(folder.name, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        IconButton(onClick = { onScanFolder(folder) }) { Icon(Icons.Default.Refresh, "扫描") }
-                        IconButton(onClick = { onRemoveFolder(folder) }) { Icon(Icons.Default.Delete, "删除") }
-                    }
-                }
-            }
-        }
     }
 }
 

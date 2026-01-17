@@ -16,19 +16,37 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.io.File
 import java.net.URLDecoder
 import javax.inject.Inject
 
-// 新增 Tab：历史记录
+// [修改] Tab枚举：把ALL改为RECORDS（记录）
 enum class LibraryTab {
-    ALL, FAVORITES, HISTORY, TAGS, FOLDERS
+    RECORDS, FAVORITES, HISTORY, TAGS, FOLDERS
 }
 
 // 文件夹显示项模型
 sealed class FileSystemItem {
-    data class Folder(val name: String, val path: String) : FileSystemItem()
+    data class Folder(val name: String, val path: String, val audioCount: Int = 0) : FileSystemItem()
     data class File(val audioFile: AudioFile) : FileSystemItem()
 }
+
+// [新增] 按文件夹分组的记录
+data class FolderGroup(
+    val folderName: String,
+    val folderPath: String,
+    val audioFiles: List<AudioFile>
+)
+
+// [新增] 音频详情数据类
+data class AudioFileDetails(
+    val audioFile: AudioFile,
+    val fileSizeBytes: Long,
+    val formattedSize: String,
+    val formattedDuration: String,
+    val hasSubtitle: Boolean,
+    val parentFolder: String
+)
 
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
@@ -45,12 +63,30 @@ class LibraryViewModel @Inject constructor(
     private val _selectedAudioIds = MutableStateFlow<Set<Long>>(emptySet())
     val selectedAudioIds: StateFlow<Set<Long>> = _selectedAudioIds.asStateFlow()
 
-    // 全部文件
-    val audioFiles: StateFlow<List<AudioFile>> = combine(
-        repository.getAllAudioFiles(),
+    // [新增] 音频详情对话框状态
+    private val _audioDetailsState = MutableStateFlow<AudioFileDetails?>(null)
+    val audioDetailsState: StateFlow<AudioFileDetails?> = _audioDetailsState.asStateFlow()
+
+    // [修改] 记录页面：按直接父文件夹分组的历史记录
+    val recordGroups: StateFlow<List<FolderGroup>> = combine(
+        repository.getHistory(),
         _searchQuery
     ) { files, query ->
-        if (query.isBlank()) files else files.filter { it.title.contains(query, ignoreCase = true) }
+        val filtered = if (query.isBlank()) files else files.filter { it.title.contains(query, ignoreCase = true) }
+
+        // 按直接父文件夹分组
+        filtered.groupBy { audioFile ->
+            getParentFolderPath(audioFile.path)
+        }.map { (folderPath, audioFiles) ->
+            FolderGroup(
+                folderName = getParentFolderName(folderPath),
+                folderPath = folderPath,
+                audioFiles = audioFiles
+            )
+        }.sortedByDescending { group ->
+            // 按最近播放时间排序
+            group.audioFiles.maxOfOrNull { it.lastPlayedAt ?: 0L } ?: 0L
+        }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     // 收藏
@@ -61,7 +97,7 @@ class LibraryViewModel @Inject constructor(
         if (query.isBlank()) files else files.filter { it.title.contains(query, ignoreCase = true) }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // [新增] 历史记录
+    // 历史记录（扁平列表，用于HISTORY tab）
     val history: StateFlow<List<AudioFile>> = combine(
         repository.getHistory(),
         _searchQuery
@@ -72,59 +108,61 @@ class LibraryViewModel @Inject constructor(
     val scanFolders: StateFlow<List<ScanFolder>> = repository.getAllScanFolders()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
+    // 全部音频（用于文件夹内容计算）
+    private val allAudioFiles: StateFlow<List<AudioFile>> = repository.getAllAudioFiles()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
     // --- 文件夹浏览器状态 ---
-    // 当前浏览的路径，null 表示在根目录（显示 ScanFolders 列表）
     private val _currentFolderPath = MutableStateFlow<String?>(null)
     val currentFolderPath: StateFlow<String?> = _currentFolderPath.asStateFlow()
 
-    // 文件夹内容：结合了 scanFolders 和 audioFiles 计算得出
+    // [新增] 文件夹展开状态
+    private val _expandedFolders = MutableStateFlow<Set<String>>(emptySet())
+    val expandedFolders: StateFlow<Set<String>> = _expandedFolders.asStateFlow()
+
+    // [修改] 文件夹内容：显示文件夹和其下的音频
     val folderContent: StateFlow<List<FileSystemItem>> = combine(
         _currentFolderPath,
         scanFolders,
-        audioFiles // 使用全部文件来计算层级
+        allAudioFiles
     ) { currentPath, roots, allFiles ->
         if (currentPath == null) {
-            // 根目录：显示所有已添加的扫描文件夹
-            roots.map { FileSystemItem.Folder(it.name, it.path) }
+            // 根目录：显示所有已添加的扫描文件夹，并计算音频数量
+            roots.map { folder ->
+                val count = allFiles.count { it.path.startsWith(folder.path) }
+                FileSystemItem.Folder(folder.name, folder.path, count)
+            }
         } else {
             // 子目录：筛选当前路径下的文件和子文件夹
             val items = mutableListOf<FileSystemItem>()
             val processedSubFolders = mutableSetOf<String>()
-
-            // 1. 找文件
-            // 标准化路径：移除末尾斜杠以匹配
             val normalizedCurrent = currentPath.trimEnd('/')
 
             allFiles.forEach { file ->
-                // 解码路径以正确处理空格和特殊字符
-                val decodedPath = try { URLDecoder.decode(file.path, "UTF-8") } catch(e:Exception) { file.path }
+                val decodedPath = try { URLDecoder.decode(file.path, "UTF-8") } catch(e: Exception) { file.path }
                 val parentPath = decodedPath.substringBeforeLast("/")
 
-                // 检查文件是否直接在当前文件夹下 (需要处理 URL 编码差异，这里做简化包含判断)
-                // 严谨做法是比较 decodedPath 的父路径
-                if (parentPath == normalizedCurrent || URLDecoder.decode(file.path, "UTF-8").substringBeforeLast("/") == normalizedCurrent) {
+                // 文件直接在当前文件夹下
+                if (parentPath == normalizedCurrent ||
+                    try { URLDecoder.decode(file.path, "UTF-8") } catch(e: Exception) { file.path }
+                        .substringBeforeLast("/") == normalizedCurrent) {
                     items.add(FileSystemItem.File(file))
                 }
-                // 2. 找子文件夹
+                // 找子文件夹
                 else if (file.path.startsWith(normalizedCurrent)) {
-                    // 提取子文件夹名
-                    // 例如 current=/storage/emulated/0/Music
-                    // file=/storage/emulated/0/Music/Pop/Song.mp3
-                    // remainder=/Pop/Song.mp3
-                    // subFolder=Pop
                     val remainder = file.path.removePrefix(normalizedCurrent).removePrefix("/")
                     val subFolderName = remainder.substringBefore("/")
-                    if (subFolderName != remainder) { // 确保还有下一级
-                        if (!processedSubFolders.contains(subFolderName)) {
-                            processedSubFolders.add(subFolderName)
-                            items.add(FileSystemItem.Folder(subFolderName, "$normalizedCurrent/$subFolderName"))
-                        }
+                    if (subFolderName != remainder && !processedSubFolders.contains(subFolderName)) {
+                        processedSubFolders.add(subFolderName)
+                        val subFolderPath = "$normalizedCurrent/$subFolderName"
+                        val count = allFiles.count { it.path.startsWith(subFolderPath) }
+                        items.add(FileSystemItem.Folder(subFolderName, subFolderPath, count))
                     }
                 }
             }
             items.sortedBy {
                 when(it) {
-                    is FileSystemItem.Folder -> "0${it.name}" // 文件夹排前面
+                    is FileSystemItem.Folder -> "0${it.name}"
                     is FileSystemItem.File -> "1${it.audioFile.title}"
                 }
             }
@@ -152,6 +190,72 @@ class LibraryViewModel @Inject constructor(
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
+    // --- 辅助函数 ---
+    private fun getParentFolderPath(filePath: String): String {
+        val decoded = try { URLDecoder.decode(filePath, "UTF-8") } catch(e: Exception) { filePath }
+        return decoded.substringBeforeLast("/")
+    }
+
+    private fun getParentFolderName(folderPath: String): String {
+        return folderPath.substringAfterLast("/").ifEmpty { folderPath }
+    }
+
+    // [新增] 获取音频详情
+    fun showAudioDetails(audioFile: AudioFile) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val uri = Uri.parse(audioFile.path)
+                var fileSize = 0L
+
+                // 尝试获取文件大小
+                try {
+                    context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                        fileSize = pfd.statSize
+                    }
+                } catch (e: Exception) {
+                    Log.e("LibraryViewModel", "Failed to get file size", e)
+                }
+
+                val details = AudioFileDetails(
+                    audioFile = audioFile,
+                    fileSizeBytes = fileSize,
+                    formattedSize = formatFileSize(fileSize),
+                    formattedDuration = formatDuration(audioFile.duration),
+                    hasSubtitle = !audioFile.lrcPath.isNullOrEmpty(),
+                    parentFolder = getParentFolderName(getParentFolderPath(audioFile.path))
+                )
+                _audioDetailsState.value = details
+            } catch (e: Exception) {
+                Log.e("LibraryViewModel", "Failed to get audio details", e)
+            }
+        }
+    }
+
+    fun dismissAudioDetails() {
+        _audioDetailsState.value = null
+    }
+
+    private fun formatFileSize(bytes: Long): String {
+        return when {
+            bytes < 1024 -> "$bytes B"
+            bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
+            bytes < 1024 * 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
+            else -> "%.2f GB".format(bytes / (1024.0 * 1024.0 * 1024.0))
+        }
+    }
+
+    private fun formatDuration(ms: Long): String {
+        val totalSeconds = ms / 1000
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+        return if (hours > 0) {
+            "%d:%02d:%02d".format(hours, minutes, seconds)
+        } else {
+            "%d:%02d".format(minutes, seconds)
+        }
+    }
+
     fun search(query: String) { _searchQuery.value = query }
 
     // --- 文件夹导航 ---
@@ -162,15 +266,23 @@ class LibraryViewModel @Inject constructor(
     fun navigateUp() {
         val current = _currentFolderPath.value
         if (current != null) {
-            // 检查当前是否是某个 ScanFolder 的根路径，如果是，则退回到 null (显示根列表)
             val isRoot = scanFolders.value.any { it.path == current }
             if (isRoot) {
                 _currentFolderPath.value = null
             } else {
-                // 截取上一级路径
                 val parent = current.substringBeforeLast("/")
                 _currentFolderPath.value = parent
             }
+        }
+    }
+
+    // [新增] 切换文件夹展开状态
+    fun toggleFolderExpanded(path: String) {
+        val current = _expandedFolders.value
+        _expandedFolders.value = if (current.contains(path)) {
+            current - path
+        } else {
+            current + path
         }
     }
 
@@ -224,7 +336,7 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             val docFile = DocumentFile.fromTreeUri(context, uri)
             val name = docFile?.name ?: "Unknown"
-            val path = try { URLDecoder.decode(uri.toString(), "UTF-8") } catch(e:Exception) { uri.toString() }
+            val path = try { URLDecoder.decode(uri.toString(), "UTF-8") } catch(e: Exception) { uri.toString() }
 
             val folder = ScanFolder(path = path, name = name)
             repository.insertScanFolder(folder)
@@ -243,7 +355,6 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             _isScanning.value = true
             try {
-                // 将存储的 path (可能是解码后的或原始 URI) 转回 Uri 对象进行扫描
                 val uri = Uri.parse(folder.path)
                 val docFile = DocumentFile.fromTreeUri(context, uri)
                 val existingPaths = repository.getAllPaths().toHashSet()
@@ -274,8 +385,7 @@ class LibraryViewModel @Inject constructor(
                 scanDirectory(file, results, existingPaths)
             } else {
                 val fileName = file.name ?: ""
-                // 存储解码后的路径，方便显示和层级计算，或者保持 URI 格式统一
-                val filePath = try { URLDecoder.decode(file.uri.toString(), "UTF-8") } catch(e:Exception) { file.uri.toString() }
+                val filePath = try { URLDecoder.decode(file.uri.toString(), "UTF-8") } catch(e: Exception) { file.uri.toString() }
 
                 if (existingPaths.contains(filePath)) return@forEach
 
@@ -309,7 +419,11 @@ class LibraryViewModel @Inject constructor(
         val parent = audioFile.parentFile ?: return null
         val baseName = audioFile.name?.substringBeforeLast(".") ?: return null
         parent.listFiles().forEach { file ->
-            if (file.name.equals("$baseName.lrc", ignoreCase = true)) return file.uri.toString()
+            val fileName = file.name ?: ""
+            if (fileName.equals("$baseName.lrc", ignoreCase = true) ||
+                fileName.equals("$baseName.srt", ignoreCase = true)) {
+                return file.uri.toString()
+            }
         }
         return null
     }

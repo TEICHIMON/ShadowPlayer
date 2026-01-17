@@ -70,6 +70,10 @@ class AudioPlayer @Inject constructor(
             val player = getOrCreatePlayer()
             val uri = Uri.parse(path)
 
+            // [修复] 加载新音频时先停止播放，确保状态同步
+            player.playWhenReady = false
+            _isPlaying.value = false
+
             val mediaItem = MediaItem.fromUri(uri)
             player.setMediaItem(mediaItem)
             player.prepare()
