@@ -4,7 +4,6 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
-// 修改点：添加 indices = [Index(value = ["path"], unique = true)]
 @Entity(
     tableName = "audio_files",
     indices = [Index(value = ["path"], unique = true)]
@@ -20,5 +19,7 @@ data class AudioFile(
     val lastPosition: Long = 0,
     val playCount: Int = 0,
     val isFavorite: Boolean = false,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    // 新增字段：最近播放时间，用于历史记录排序
+    val lastPlayedAt: Long? = null
 )
