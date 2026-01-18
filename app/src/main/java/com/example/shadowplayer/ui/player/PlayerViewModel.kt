@@ -37,25 +37,47 @@ class PlayerViewModel @Inject constructor(
     val playerState: StateFlow<SentencePlayerState> = sentencePlayer.state
     val settings: StateFlow<PlaybackSettings> = sentencePlayer.settings
 
+    // 播放列表状态
+    val playlist: StateFlow<List<AudioFile>> = sentencePlayer.playlist
+    val currentPlaylistIndex: StateFlow<Int> = sentencePlayer.currentPlaylistIndex
+
     init {
         val audioId = savedStateHandle.get<Long>("audioId") ?: -1L
         if (audioId > 0) {
-            val currentId = currentAudioFile.value?.id
-            if (currentId != audioId) {
+            // 从列表点击进来，带有 audioId
+            // [修复问题1] 检查是否已在播放同一首音频
+            if (sentencePlayer.isPlayingAudio(audioId)) {
+                // 已经在播放这首音频，只需同步 UI 状态，不重新加载
+                viewModelScope.launch {
+                    val audioFile = repository.getAudioById(audioId)
+                    _currentAudioFile.value = audioFile
+                }
+            } else {
+                // 不是同一首，正常加载
                 loadAudioById(audioId)
             }
         } else {
+            // 直接点击Tab进入播放页面
             restoreLastPlayedAudio()
         }
     }
 
     private fun restoreLastPlayedAudio() {
+        // [修复问题1] 检查 SentencePlayer 是否已有正在播放的音频
+        val currentPlayingId = sentencePlayer.getCurrentAudioId()
+        if (currentPlayingId > 0) {
+            // 已有正在播放的音频，只同步 UI 状态
+            viewModelScope.launch {
+                val audioFile = repository.getAudioById(currentPlayingId)
+                _currentAudioFile.value = audioFile
+            }
+            return
+        }
+
+        // 没有正在播放的，尝试恢复上次播放的音频
         val lastAudioId = sentencePlayer.getLastPlayedAudioId()
         if (lastAudioId > 0) {
-            val currentId = _currentAudioFile.value?.id
-            if (currentId != lastAudioId) {
-                loadAudioById(lastAudioId)
-            }
+            loadAudioById(lastAudioId)
         }
     }
 
@@ -64,7 +86,7 @@ class PlayerViewModel @Inject constructor(
             val audioFile = repository.getAudioById(audioId)
             if (audioFile != null) {
                 loadAudio(audioFile)
-                // [新增] 更新最近播放时间
+                // 更新最近播放时间
                 repository.updateLastPlayedAt(audioId, System.currentTimeMillis())
             }
         }
@@ -99,11 +121,14 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    // 句子控制
     fun togglePlayPause() = sentencePlayer.togglePlayPause()
     fun nextSentence() = sentencePlayer.nextSentence()
     fun previousSentence() = sentencePlayer.previousSentence()
     fun seekToSentence(index: Int) = sentencePlayer.seekToSentence(index)
     fun seekTo(position: Long) = sentencePlayer.seekTo(position)
+
+    // 设置
     fun setSpeed(speed: Float) = sentencePlayer.setSpeed(speed)
     fun setRepeatCount(count: Int) = sentencePlayer.setRepeatCount(count)
     fun setRepeatInterval(interval: Long) = sentencePlayer.setRepeatInterval(interval)
@@ -111,5 +136,40 @@ class PlayerViewModel @Inject constructor(
     fun setAutoNext(enabled: Boolean) {
         val current = settings.value
         sentencePlayer.updateSettings(current.copy(autoNext = enabled))
+    }
+
+    // ===== 上一首/下一首功能 =====
+
+    /**
+     * 是否可以播放上一首
+     */
+    fun canPlayPrevious(): Boolean = sentencePlayer.canPlayPrevious()
+
+    /**
+     * 是否可以播放下一首
+     */
+    fun canPlayNext(): Boolean = sentencePlayer.canPlayNext()
+
+    /**
+     * 播放上一首
+     */
+    fun playPrevious() {
+        val previousAudio = sentencePlayer.getPreviousAudio() ?: return
+        loadAudioById(previousAudio.id)
+    }
+
+    /**
+     * 播放下一首
+     */
+    fun playNext() {
+        val nextAudio = sentencePlayer.getNextAudio() ?: return
+        loadAudioById(nextAudio.id)
+    }
+
+    /**
+     * 设置播放列表（从 LibraryScreen 调用）
+     */
+    fun setPlaylist(audioFiles: List<AudioFile>, currentIndex: Int) {
+        sentencePlayer.setPlaylist(audioFiles, currentIndex)
     }
 }

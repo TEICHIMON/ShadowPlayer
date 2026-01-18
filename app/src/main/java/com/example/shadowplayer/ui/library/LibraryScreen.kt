@@ -40,7 +40,6 @@ fun LibraryScreen(
     onFileSelected: (AudioFile) -> Unit,
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
-    // [修改] 记录分组
     val recordGroups by viewModel.recordGroups.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
     val history by viewModel.history.collectAsState()
@@ -49,7 +48,6 @@ fun LibraryScreen(
     val selectedTagId by viewModel.selectedTagId.collectAsState()
     val audioFilesByTag by viewModel.audioFilesByTag.collectAsState()
 
-    // 文件夹视图状态
     val scanFolders by viewModel.scanFolders.collectAsState()
     val folderContent by viewModel.folderContent.collectAsState()
     val currentFolderPath by viewModel.currentFolderPath.collectAsState()
@@ -60,10 +58,11 @@ fun LibraryScreen(
     val isSelectionMode by viewModel.isSelectionMode.collectAsState()
     val selectedIds by viewModel.selectedAudioIds.collectAsState()
 
-    // [新增] 音频详情状态
     val audioDetails by viewModel.audioDetailsState.collectAsState()
 
-    // [修改] 默认Tab改为RECORDS
+    // 当前正在播放的音频ID
+    val currentPlayingAudioId by viewModel.currentPlayingAudioId.collectAsState()
+
     var selectedTab by remember { mutableStateOf(LibraryTab.RECORDS) }
     var showAddTagDialog by remember { mutableStateOf(false) }
     var showAddToTagDialog by remember { mutableStateOf<AudioFile?>(null) }
@@ -81,7 +80,6 @@ fun LibraryScreen(
         }
     }
 
-    // 处理返回键
     BackHandler(enabled = isSelectionMode || showTagManager || (selectedTab == LibraryTab.FOLDERS && currentFolderPath != null)) {
         when {
             showTagManager -> showTagManager = false
@@ -90,13 +88,18 @@ fun LibraryScreen(
         }
     }
 
-    // 当前视图的音频列表（用于全选）
     val currentViewList = when (selectedTab) {
         LibraryTab.RECORDS -> recordGroups.flatMap { it.audioFiles }
         LibraryTab.FAVORITES -> favorites
         LibraryTab.HISTORY -> history
         LibraryTab.TAGS -> audioFilesByTag
         LibraryTab.FOLDERS -> folderContent.mapNotNull { (it as? FileSystemItem.File)?.audioFile }
+    }
+
+    // 包装 onFileSelected，在选择文件时设置播放列表
+    val handleFileSelected: (AudioFile) -> Unit = { audioFile ->
+        viewModel.setPlaylistForAudio(audioFile)
+        onFileSelected(audioFile)
     }
 
     if (showTagManager) {
@@ -154,7 +157,6 @@ fun LibraryScreen(
                         modifier = Modifier.fillMaxWidth(),
                         edgePadding = 16.dp
                     ) {
-                        // [修改] 把"全部"改成"记录"
                         Tab(selected = selectedTab == LibraryTab.RECORDS, onClick = { selectedTab = LibraryTab.RECORDS }, text = { Text("记录") })
                         Tab(selected = selectedTab == LibraryTab.FAVORITES, onClick = { selectedTab = LibraryTab.FAVORITES }, text = { Text("收藏") })
                         Tab(selected = selectedTab == LibraryTab.HISTORY, onClick = { selectedTab = LibraryTab.HISTORY }, text = { Text("历史") })
@@ -166,13 +168,13 @@ fun LibraryScreen(
                 if (isScanning) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
 
                 when (selectedTab) {
-                    // [修改] 记录Tab - 按文件夹分组显示
                     LibraryTab.RECORDS -> {
                         RecordsGroupedSection(
                             groups = recordGroups,
+                            currentPlayingAudioId = currentPlayingAudioId,
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
-                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
+                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else handleFileSelected(it) },
                             onFileLongClick = { viewModel.showAudioDetails(it) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
                             onAddTagClick = { showAddToTagDialog = it }
@@ -181,9 +183,10 @@ fun LibraryScreen(
                     LibraryTab.FAVORITES -> {
                         AudioFileList(
                             audioFiles = favorites,
+                            currentPlayingAudioId = currentPlayingAudioId,
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
-                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
+                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else handleFileSelected(it) },
                             onFileLongClick = { viewModel.showAudioDetails(it) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
                             onDeleteClick = { viewModel.deleteAudio(it) },
@@ -193,9 +196,10 @@ fun LibraryScreen(
                     LibraryTab.HISTORY -> {
                         AudioFileList(
                             audioFiles = history,
+                            currentPlayingAudioId = currentPlayingAudioId,
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
-                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
+                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else handleFileSelected(it) },
                             onFileLongClick = { viewModel.showAudioDetails(it) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
                             onDeleteClick = { viewModel.deleteAudio(it) },
@@ -207,11 +211,12 @@ fun LibraryScreen(
                             allTags = allTags,
                             selectedTagId = selectedTagId,
                             audioFiles = audioFilesByTag,
+                            currentPlayingAudioId = currentPlayingAudioId,
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
                             onTagClick = { viewModel.selectTag(it) },
                             onManageTags = { showTagManager = true },
-                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
+                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else handleFileSelected(it) },
                             onFileLongClick = { viewModel.showAudioDetails(it) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
                             onAddTagClick = { showAddToTagDialog = it }
@@ -221,13 +226,14 @@ fun LibraryScreen(
                         FoldersExplorerSection(
                             currentPath = currentFolderPath,
                             items = folderContent,
+                            currentPlayingAudioId = currentPlayingAudioId,
                             expandedFolders = expandedFolders,
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
                             onNavigate = { viewModel.navigateToFolder(it) },
                             onNavigateUp = { viewModel.navigateUp() },
                             onToggleExpand = { viewModel.toggleFolderExpanded(it) },
-                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else onFileSelected(it) },
+                            onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else handleFileSelected(it) },
                             onFileLongClick = { viewModel.showAudioDetails(it) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
                             onAddTagClick = { showAddToTagDialog = it },
@@ -256,7 +262,6 @@ fun LibraryScreen(
         )
     }
 
-    // 单个添加标签
     showAddToTagDialog?.let { audioFile ->
         AddToTagDialog(
             audioFile = audioFile,
@@ -269,7 +274,6 @@ fun LibraryScreen(
         )
     }
 
-    // 批量添加标签
     if (showBatchAddTagDialog) {
         AddToTagDialog(
             audioFile = AudioFile(0, "", "", 0),
@@ -282,7 +286,6 @@ fun LibraryScreen(
         )
     }
 
-    // [新增] 音频详情对话框
     audioDetails?.let { details ->
         AudioDetailsDialog(
             details = details,
@@ -291,7 +294,6 @@ fun LibraryScreen(
     }
 }
 
-// [新增] 音频详情对话框
 @Composable
 fun AudioDetailsDialog(
     details: AudioFileDetails,
@@ -318,7 +320,6 @@ fun AudioDetailsDialog(
                     DetailRow("最近播放", formatTimestamp(details.audioFile.lastPlayedAt))
                 }
 
-                // 文件路径（可滚动）
                 Text(
                     text = "文件路径",
                     style = MaterialTheme.typography.labelMedium,
@@ -369,10 +370,11 @@ private fun formatTimestamp(timestamp: Long): String {
     return sdf.format(java.util.Date(timestamp))
 }
 
-// [新增] 记录Tab - 按文件夹分组显示
+// [问题4修改] 记录Tab - 按文件夹分组显示，默认折叠
 @Composable
 fun RecordsGroupedSection(
     groups: List<FolderGroup>,
+    currentPlayingAudioId: Long,
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
     onFileClick: (AudioFile) -> Unit,
@@ -405,6 +407,7 @@ fun RecordsGroupedSection(
             items(groups, key = { it.folderPath }) { group ->
                 FolderGroupCard(
                     group = group,
+                    currentPlayingAudioId = currentPlayingAudioId,
                     isSelectionMode = isSelectionMode,
                     selectedIds = selectedIds,
                     onFileClick = onFileClick,
@@ -420,6 +423,7 @@ fun RecordsGroupedSection(
 @Composable
 fun FolderGroupCard(
     group: FolderGroup,
+    currentPlayingAudioId: Long,
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
     onFileClick: (AudioFile) -> Unit,
@@ -427,7 +431,11 @@ fun FolderGroupCard(
     onFavoriteClick: (AudioFile) -> Unit,
     onAddTagClick: (AudioFile) -> Unit
 ) {
-    var expanded by remember { mutableStateOf(true) }
+    // [问题4修改] 默认折叠
+    var expanded by remember { mutableStateOf(false) }
+
+    // 检查该文件夹是否包含正在播放的音频
+    val containsPlaying = group.audioFiles.any { it.id == currentPlayingAudioId }
 
     Card(
         modifier = Modifier.fillMaxWidth()
@@ -436,7 +444,10 @@ fun FolderGroupCard(
             // 文件夹标题
             Surface(
                 onClick = { expanded = !expanded },
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                color = if (containsPlaying)
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                else
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
             ) {
                 Row(
                     modifier = Modifier
@@ -462,6 +473,16 @@ fun FolderGroupCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    // 如果包含正在播放的音频，显示播放图标
+                    if (containsPlaying) {
+                        Icon(
+                            Icons.Default.PlayCircle,
+                            contentDescription = "正在播放",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
                     Icon(
                         if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                         contentDescription = if (expanded) "收起" else "展开"
@@ -479,6 +500,7 @@ fun FolderGroupCard(
                     group.audioFiles.forEach { audioFile ->
                         CompactAudioFileItem(
                             audioFile = audioFile,
+                            isCurrentlyPlaying = audioFile.id == currentPlayingAudioId,
                             isSelectionMode = isSelectionMode,
                             isSelected = selectedIds.contains(audioFile.id),
                             onClick = { onFileClick(audioFile) },
@@ -487,7 +509,7 @@ fun FolderGroupCard(
                             onAddTagClick = { onAddTagClick(audioFile) }
                         )
                         if (audioFile != group.audioFiles.last()) {
-                            Divider(
+                            HorizontalDivider(
                                 modifier = Modifier.padding(start = 56.dp),
                                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                             )
@@ -499,11 +521,12 @@ fun FolderGroupCard(
     }
 }
 
-// 紧凑型音频项
+// [问题4修改] 紧凑型音频项 - 添加正在播放高亮
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CompactAudioFileItem(
     audioFile: AudioFile,
+    isCurrentlyPlaying: Boolean,
     isSelectionMode: Boolean,
     isSelected: Boolean,
     onClick: () -> Unit,
@@ -512,10 +535,13 @@ fun CompactAudioFileItem(
     onAddTagClick: () -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
-    val backgroundColor = if (isSelected)
-        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-    else
-        MaterialTheme.colorScheme.surface
+
+    // 背景色：正在播放 > 选中 > 普通
+    val backgroundColor = when {
+        isCurrentlyPlaying -> MaterialTheme.colorScheme.primaryContainer
+        isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+        else -> MaterialTheme.colorScheme.surface
+    }
 
     Row(
         modifier = Modifier
@@ -539,12 +565,22 @@ fun CompactAudioFileItem(
             )
             Spacer(modifier = Modifier.width(12.dp))
         } else {
-            Icon(
-                Icons.Default.MusicNote,
-                contentDescription = null,
-                modifier = Modifier.size(24.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
+            // 正在播放显示动画图标，否则显示音乐图标
+            if (isCurrentlyPlaying) {
+                Icon(
+                    Icons.Default.GraphicEq,
+                    contentDescription = "正在播放",
+                    modifier = Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            } else {
+                Icon(
+                    Icons.Default.MusicNote,
+                    contentDescription = null,
+                    modifier = Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Spacer(modifier = Modifier.width(12.dp))
         }
 
@@ -552,6 +588,8 @@ fun CompactAudioFileItem(
             Text(
                 text = audioFile.title,
                 style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Normal,
+                color = if (isCurrentlyPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -590,11 +628,12 @@ fun CompactAudioFileItem(
     }
 }
 
-// [修改] 文件夹浏览器视图 - 显示音频数量
+// 文件夹浏览器视图
 @Composable
 fun FoldersExplorerSection(
     currentPath: String?,
     items: List<FileSystemItem>,
+    currentPlayingAudioId: Long,
     expandedFolders: Set<String>,
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
@@ -610,7 +649,6 @@ fun FoldersExplorerSection(
     onScanAll: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        // 顶部导航栏
         if (currentPath == null) {
             Row(
                 modifier = Modifier
@@ -682,6 +720,7 @@ fun FoldersExplorerSection(
                         is FileSystemItem.File -> {
                             CompactAudioFileItem(
                                 audioFile = item.audioFile,
+                                isCurrentlyPlaying = item.audioFile.id == currentPlayingAudioId,
                                 isSelectionMode = isSelectionMode,
                                 isSelected = selectedIds.contains(item.audioFile.id),
                                 onClick = { onFileClick(item.audioFile) },
@@ -691,7 +730,7 @@ fun FoldersExplorerSection(
                             )
                         }
                     }
-                    Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                 }
             }
         }
@@ -745,7 +784,7 @@ fun FolderListItem(
     )
 }
 
-// ---------------- 其他组件保持不变 ----------------
+// ---------------- 其他组件 ----------------
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -795,7 +834,7 @@ fun TagManagementScreen(
                             }
                         }
                     )
-                    Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 }
             }
         }
@@ -837,6 +876,7 @@ fun buildTagTree(tags: List<Tag>): List<Pair<Tag, Int>> {
 @Composable
 fun AudioFileList(
     audioFiles: List<AudioFile>,
+    currentPlayingAudioId: Long,
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
     onFileClick: (AudioFile) -> Unit,
@@ -858,6 +898,7 @@ fun AudioFileList(
             items(audioFiles, key = { it.id }) { audioFile ->
                 AudioFileItem(
                     audioFile = audioFile,
+                    isCurrentlyPlaying = audioFile.id == currentPlayingAudioId,
                     isSelectionMode = isSelectionMode,
                     isSelected = selectedIds.contains(audioFile.id),
                     onClick = { onFileClick(audioFile) },
@@ -875,6 +916,7 @@ fun AudioFileList(
 @Composable
 fun AudioFileItem(
     audioFile: AudioFile,
+    isCurrentlyPlaying: Boolean,
     isSelectionMode: Boolean,
     isSelected: Boolean,
     onClick: () -> Unit,
@@ -885,7 +927,12 @@ fun AudioFileItem(
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val haptic = LocalHapticFeedback.current
-    val backgroundColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surface
+
+    val backgroundColor = when {
+        isCurrentlyPlaying -> MaterialTheme.colorScheme.primaryContainer
+        isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+        else -> MaterialTheme.colorScheme.surface
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth().combinedClickable(
@@ -901,13 +948,19 @@ fun AudioFileItem(
             if (isSelectionMode) {
                 Checkbox(checked = isSelected, onCheckedChange = { onClick() })
             } else {
-                Icon(Icons.Default.AudioFile, null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
+                if (isCurrentlyPlaying) {
+                    Icon(Icons.Default.GraphicEq, null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
+                } else {
+                    Icon(Icons.Default.AudioFile, null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
+                }
             }
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = audioFile.title,
                     style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Normal,
+                    color = if (isCurrentlyPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     modifier = Modifier.basicMarquee()
                 )
@@ -935,6 +988,7 @@ fun TagsSection(
     allTags: List<Tag>,
     selectedTagId: Long?,
     audioFiles: List<AudioFile>,
+    currentPlayingAudioId: Long,
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
     onTagClick: (Long?) -> Unit,
@@ -978,11 +1032,12 @@ fun TagsSection(
                     }
                 }
             }
-            Divider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
         }
 
         AudioFileList(
             audioFiles = audioFiles,
+            currentPlayingAudioId = currentPlayingAudioId,
             isSelectionMode = isSelectionMode,
             selectedIds = selectedIds,
             onFileClick = onFileClick,
