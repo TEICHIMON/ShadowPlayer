@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -33,6 +34,8 @@ fun PlayerScreen(
     val playerState by viewModel.playerState.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val currentAudioFile by viewModel.currentAudioFile.collectAsState()
+    val playlist by viewModel.playlist.collectAsState()
+    val currentPlaylistIndex by viewModel.currentPlaylistIndex.collectAsState()
 
     var isDragging by remember { mutableStateOf(false) }
     var dragPosition by remember { mutableLongStateOf(0L) }
@@ -74,7 +77,6 @@ fun PlayerScreen(
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 val currentText = if (targetIndex in playerState.sentences.indices) playerState.sentences[targetIndex].text else null
                 if (currentText != null && settings.showSubtitle) {
-                    // [修改] 允许复制单个大字幕
                     SelectionContainer {
                         Text(text = currentText, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
                     }
@@ -97,13 +99,29 @@ fun PlayerScreen(
             onPreview = { position -> isDragging = true; dragPosition = position }
         )
         Spacer(modifier = Modifier.height(8.dp))
+
+        // 句子控制
         PlaybackControls(
             isPlaying = playerState.isPlaying,
             onPlayPause = { viewModel.togglePlayPause() },
             onPrevious = { viewModel.previousSentence() },
             onNext = { viewModel.nextSentence() }
         )
+
         Spacer(modifier = Modifier.height(8.dp))
+
+        // 曲目控制（上一首/下一首）
+        TrackControls(
+            canPlayPrevious = viewModel.canPlayPrevious(),
+            canPlayNext = viewModel.canPlayNext(),
+            onPreviousTrack = { viewModel.playPrevious() },
+            onNextTrack = { viewModel.playNext() },
+            currentIndex = currentPlaylistIndex,
+            totalTracks = playlist.size
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
         SettingsBar(
             settings = settings,
             currentRepeat = playerState.currentRepeat,
@@ -123,24 +141,35 @@ fun SubtitleList(
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
+    val density = LocalDensity.current
 
+    // [修复问题2] 让当前字幕居中显示
     LaunchedEffect(currentIndex) {
         if (currentIndex >= 0 && currentIndex < sentences.size) {
-            listState.animateScrollToItem(index = maxOf(0, currentIndex - 2))
+            val layoutInfo = listState.layoutInfo
+            val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
+
+            // 估算每个项的高度（大约56dp）
+            val itemHeight = with(density) { 56.dp.toPx() }.toInt()
+            // 计算让当前项居中需要的偏移量
+            val centerOffset = (viewportHeight / 2) - (itemHeight / 2)
+
+            listState.animateScrollToItem(
+                index = currentIndex,
+                scrollOffset = -centerOffset
+            )
         }
     }
 
     LazyColumn(state = listState, modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         itemsIndexed(sentences) { index, sentence ->
             val isCurrentSentence = index == currentIndex
-            // [修改] 实现复制功能
-            // 外部 Row 处理点击跳转，内部 SelectionContainer 处理文字选择
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
                     .background(if (isCurrentSentence) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface)
-                    .clickable { onSentenceClick(index) } // 点击整行跳转
+                    .clickable { onSentenceClick(index) }
                     .padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -151,7 +180,6 @@ fun SubtitleList(
                     modifier = Modifier.width(50.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                // 包裹文字以支持复制
                 SelectionContainer {
                     Text(
                         text = sentence.text,
@@ -170,9 +198,8 @@ fun ProgressSection(
     currentPosition: Long,
     totalDuration: Long,
     onSeek: (Long) -> Unit,
-    onPreview: (Long) -> Unit // 新增：拖拽过程中的回调
+    onPreview: (Long) -> Unit
 ) {
-    // 进度比例计算
     val progress = if (totalDuration > 0) {
         currentPosition.toFloat() / totalDuration
     } else {
@@ -183,14 +210,10 @@ fun ProgressSection(
         Slider(
             value = progress,
             onValueChange = { value ->
-                // 实时计算拖拽到的时间点，并通过 onPreview 回传
                 val previewTime = (value * totalDuration).toLong()
                 onPreview(previewTime)
             },
             onValueChangeFinished = {
-                // 松手时，执行真正的 seek
-                // 注意：这里我们不需要再计算时间，因为 PlayerScreen 已经有了 dragPosition
-                // 但为了接口清晰，我们还是重新传递一次当前显示的时间作为 seek 目标
                 onSeek(currentPosition)
             },
             modifier = Modifier.fillMaxWidth()
@@ -247,6 +270,64 @@ fun PlaybackControls(
                 imageVector = Icons.Default.SkipNext,
                 contentDescription = "下一句",
                 modifier = Modifier.size(36.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 曲目控制 - 上一首/下一首
+ */
+@Composable
+fun TrackControls(
+    canPlayPrevious: Boolean,
+    canPlayNext: Boolean,
+    onPreviousTrack: () -> Unit,
+    onNextTrack: () -> Unit,
+    currentIndex: Int,
+    totalTracks: Int
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 上一首按钮
+        TextButton(
+            onClick = onPreviousTrack,
+            enabled = canPlayPrevious
+        ) {
+            Icon(
+                imageVector = Icons.Default.FastRewind,
+                contentDescription = "上一首",
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("上一首")
+        }
+
+        // 显示当前位置信息
+        if (totalTracks > 0) {
+            Spacer(modifier = Modifier.width(16.dp))
+            Text(
+                text = "${currentIndex + 1} / $totalTracks",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+        }
+
+        // 下一首按钮
+        TextButton(
+            onClick = onNextTrack,
+            enabled = canPlayNext
+        ) {
+            Text("下一首")
+            Spacer(modifier = Modifier.width(4.dp))
+            Icon(
+                imageVector = Icons.Default.FastForward,
+                contentDescription = "下一首",
+                modifier = Modifier.size(20.dp)
             )
         }
     }

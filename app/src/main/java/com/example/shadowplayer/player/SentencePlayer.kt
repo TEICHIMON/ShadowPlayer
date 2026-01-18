@@ -2,6 +2,7 @@ package com.example.shadowplayer.player
 
 import android.content.SharedPreferences
 import androidx.core.content.edit
+import com.example.shadowplayer.data.entity.AudioFile
 import com.example.shadowplayer.data.repository.AudioRepository
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +30,13 @@ class SentencePlayer @Inject constructor(
 
     private val _settings = MutableStateFlow(PlaybackSettings())
     val settings: StateFlow<PlaybackSettings> = _settings.asStateFlow()
+
+    // 播放列表状态
+    private val _playlist = MutableStateFlow<List<AudioFile>>(emptyList())
+    val playlist: StateFlow<List<AudioFile>> = _playlist.asStateFlow()
+
+    private val _currentPlaylistIndex = MutableStateFlow(-1)
+    val currentPlaylistIndex: StateFlow<Int> = _currentPlaylistIndex.asStateFlow()
 
     private var positionUpdateJob: Job? = null
     private var intervalJob: Job? = null
@@ -72,6 +80,75 @@ class SentencePlayer @Inject constructor(
         return prefs.getLong(KEY_LAST_PLAYED_AUDIO_ID, -1L)
     }
 
+    /**
+     * 获取当前正在播放的音频ID
+     */
+    fun getCurrentAudioId(): Long = currentAudioId
+
+    /**
+     * 检查是否正在播放指定的音频
+     */
+    fun isPlayingAudio(audioId: Long): Boolean {
+        return currentAudioId == audioId && currentAudioId > 0
+    }
+
+    /**
+     * 检查当前是否处于播放状态
+     */
+    fun isCurrentlyPlaying(): Boolean {
+        return _state.value.isPlaying
+    }
+
+    /**
+     * 设置播放列表
+     */
+    fun setPlaylist(audioFiles: List<AudioFile>, currentIndex: Int) {
+        _playlist.value = audioFiles
+        _currentPlaylistIndex.value = currentIndex
+    }
+
+    /**
+     * 更新播放列表中的当前索引
+     */
+    private fun updatePlaylistIndex(audioId: Long) {
+        val index = _playlist.value.indexOfFirst { it.id == audioId }
+        if (index != -1) {
+            _currentPlaylistIndex.value = index
+        }
+    }
+
+    /**
+     * 是否可以播放上一首
+     */
+    fun canPlayPrevious(): Boolean {
+        return _currentPlaylistIndex.value > 0
+    }
+
+    /**
+     * 是否可以播放下一首
+     */
+    fun canPlayNext(): Boolean {
+        val playlist = _playlist.value
+        val currentIndex = _currentPlaylistIndex.value
+        return currentIndex >= 0 && currentIndex < playlist.size - 1
+    }
+
+    /**
+     * 获取上一首音频
+     */
+    fun getPreviousAudio(): AudioFile? {
+        if (!canPlayPrevious()) return null
+        return _playlist.value.getOrNull(_currentPlaylistIndex.value - 1)
+    }
+
+    /**
+     * 获取下一首音频
+     */
+    fun getNextAudio(): AudioFile? {
+        if (!canPlayNext()) return null
+        return _playlist.value.getOrNull(_currentPlaylistIndex.value + 1)
+    }
+
     fun load(
         audioPath: String,
         lrcContent: String?,
@@ -89,6 +166,8 @@ class SentencePlayer @Inject constructor(
         currentAudioId = audioId
         if (audioId > 0) {
             prefs.edit { putLong(KEY_LAST_PLAYED_AUDIO_ID, audioId) }
+            // 更新播放列表索引
+            updatePlaylistIndex(audioId)
         }
 
         audioPlayer.loadAudio(audioPath)
