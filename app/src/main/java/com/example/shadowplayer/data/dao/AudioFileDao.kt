@@ -67,4 +67,7 @@ interface AudioFileDao {
 
     @Query("DELETE FROM audio_files WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)
+
+    @Query("UPDATE audio_files SET lastPlayedAt = NULL WHERE id IN (:ids)")
+    suspend fun clearPlayHistory(ids: List<Long>)
 }

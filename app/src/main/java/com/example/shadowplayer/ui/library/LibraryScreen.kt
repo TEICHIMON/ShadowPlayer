@@ -72,6 +72,9 @@ fun LibraryScreen(
     var showBatchAddTagDialog by remember { mutableStateOf(false) }
     var showTagManager by remember { mutableStateOf(false) }
 
+    val folderSortType by viewModel.folderSortType.collectAsState()
+    val fileSortType = viewModel.getFileSortType(currentFolderPath)
+
     val context = LocalContext.current
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -180,7 +183,8 @@ fun LibraryScreen(
                             onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else handleFileSelected(it) },
                             onFileLongClick = { viewModel.showAudioDetails(it) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
-                            onAddTagClick = { showAddToTagDialog = it }
+                            onAddTagClick = { showAddToTagDialog = it },
+                            onDeleteGroup = { folderPath -> viewModel.clearFolderPlayHistory(folderPath) }  // 新增
                         )
                     }
                     LibraryTab.FAVORITES -> {
@@ -235,6 +239,8 @@ fun LibraryScreen(
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
                             isRefreshing = isRefreshing,
+                            folderSortType = folderSortType,  // 新增
+                            fileSortType = fileSortType,      // 新增
                             onRefresh = { viewModel.refreshFolders() },
                             onNavigate = { viewModel.navigateToFolder(it) },
                             onNavigateUp = { viewModel.navigateUp() },
@@ -248,7 +254,11 @@ fun LibraryScreen(
                                 val scanFolder = scanFolders.find { it.path == folder.path }
                                 scanFolder?.let { viewModel.removeScanFolder(it) }
                             },
-                            onScanAll = { viewModel.scanAllFolders() }
+                            onScanAll = { viewModel.scanAllFolders() },
+                            onFolderSortChange = { viewModel.setFolderSortType(it) },  // 新增
+                            onFileSortChange = { sortType ->                           // 新增
+                                currentFolderPath?.let { viewModel.setFileSortType(it, sortType) }
+                            }
                         )
                     }
                 }
@@ -386,7 +396,8 @@ fun RecordsGroupedSection(
     onFileClick: (AudioFile) -> Unit,
     onFileLongClick: (AudioFile) -> Unit,
     onFavoriteClick: (AudioFile) -> Unit,
-    onAddTagClick: (AudioFile) -> Unit
+    onAddTagClick: (AudioFile) -> Unit,
+    onDeleteGroup: (String) -> Unit
 ) {
     if (groups.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -419,7 +430,8 @@ fun RecordsGroupedSection(
                     onFileClick = onFileClick,
                     onFileLongClick = onFileLongClick,
                     onFavoriteClick = onFavoriteClick,
-                    onAddTagClick = onAddTagClick
+                    onAddTagClick = onAddTagClick,
+                    onDeleteGroup = { onDeleteGroup(group.folderPath) }  // 新增
                 )
             }
         }
@@ -435,19 +447,19 @@ fun FolderGroupCard(
     onFileClick: (AudioFile) -> Unit,
     onFileLongClick: (AudioFile) -> Unit,
     onFavoriteClick: (AudioFile) -> Unit,
-    onAddTagClick: (AudioFile) -> Unit
+    onAddTagClick: (AudioFile) -> Unit,
+    onDeleteGroup: () -> Unit  // 新增参数
 ) {
-    // [问题4修改] 默认折叠
     var expanded by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
 
-    // 检查该文件夹是否包含正在播放的音频
     val containsPlaying = group.audioFiles.any { it.id == currentPlayingAudioId }
 
     Card(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column {
-            // 文件夹标题
             Surface(
                 onClick = { expanded = !expanded },
                 color = if (containsPlaying)
@@ -458,7 +470,7 @@ fun FolderGroupCard(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                        .padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
@@ -479,7 +491,6 @@ fun FolderGroupCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    // 如果包含正在播放的音频，显示播放图标
                     if (containsPlaying) {
                         Icon(
                             Icons.Default.PlayCircle,
@@ -487,8 +498,29 @@ fun FolderGroupCard(
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(20.dp)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                     }
+
+                    // 三点菜单
+                    Box {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "更多")
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("清除播放记录") },
+                                leadingIcon = { Icon(Icons.Default.DeleteSweep, null) },
+                                onClick = {
+                                    showMenu = false
+                                    showDeleteConfirm = true
+                                }
+                            )
+                        }
+                    }
+
                     Icon(
                         if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                         contentDescription = if (expanded) "收起" else "展开"
@@ -496,7 +528,6 @@ fun FolderGroupCard(
                 }
             }
 
-            // 音频列表
             AnimatedVisibility(
                 visible = expanded,
                 enter = expandVertically(),
@@ -524,6 +555,29 @@ fun FolderGroupCard(
                 }
             }
         }
+    }
+
+    // 删除确认对话框
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            icon = { Icon(Icons.Default.DeleteSweep, null) },
+            title = { Text("清除播放记录") },
+            text = { Text("确定要清除「${group.folderName}」文件夹的播放记录吗？\n音频文件不会被删除。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteConfirm = false
+                    onDeleteGroup()
+                }) {
+                    Text("确定", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 
@@ -645,6 +699,8 @@ fun FoldersExplorerSection(
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
     isRefreshing: Boolean,
+    folderSortType: FolderSortType,  // 新增
+    fileSortType: FileSortType,      // 新增
     onRefresh: () -> Unit,
     onNavigate: (String) -> Unit,
     onNavigateUp: () -> Unit,
@@ -655,9 +711,13 @@ fun FoldersExplorerSection(
     onAddTagClick: (AudioFile) -> Unit,
     onAddScanFolder: () -> Unit,
     onRemoveScanFolder: (FileSystemItem.Folder) -> Unit,
-    onScanAll: () -> Unit
+    onScanAll: () -> Unit,
+    onFolderSortChange: (FolderSortType) -> Unit,  // 新增
+    onFileSortChange: (FileSortType) -> Unit       // 新增
 ) {
     val pullToRefreshState = rememberPullToRefreshState()
+    var showFolderSortMenu by remember { mutableStateOf(false) }
+    var showFileSortMenu by remember { mutableStateOf(false) }
 
     PullToRefreshBox(
         isRefreshing = isRefreshing,
@@ -667,48 +727,115 @@ fun FoldersExplorerSection(
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (currentPath == null) {
+                // 根目录工具栏
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Button(onClick = onAddScanFolder) {
-                        Icon(Icons.Default.CreateNewFolder, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("添加文件夹")
+                    Button(onClick = onAddScanFolder, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.CreateNewFolder, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("添加文件夹", maxLines = 1)
                     }
-                    OutlinedButton(onClick = onScanAll) {
-                        Icon(Icons.Default.Refresh, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("扫描全部")
+
+                    // 文件夹排序按钮
+                    Box {
+                        OutlinedButton(onClick = { showFolderSortMenu = true }) {
+                            Icon(Icons.Default.Sort, null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("排序", maxLines = 1)
+                        }
+                        DropdownMenu(
+                            expanded = showFolderSortMenu,
+                            onDismissRequest = { showFolderSortMenu = false }
+                        ) {
+                            FolderSortType.entries.forEach { sortType ->
+                                DropdownMenuItem(
+                                    text = { Text(sortType.displayName) },
+                                    onClick = {
+                                        onFolderSortChange(sortType)
+                                        showFolderSortMenu = false
+                                    },
+                                    leadingIcon = {
+                                        if (sortType == folderSortType) {
+                                            Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    IconButton(onClick = onScanAll) {
+                        Icon(Icons.Default.Refresh, "扫描全部")
                     }
                 }
             } else {
-                Surface(
-                    onClick = onNavigateUp,
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                // 子文件夹工具栏
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    Surface(
+                        onClick = onNavigateUp,
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Icon(
-                            Icons.Default.ArrowBack,
-                            null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Text(
-                            "返回上一级",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.ArrowBack,
+                                null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                "返回上一级",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
+                    // 文件排序按钮（文件夹内）
+                    Box(modifier = Modifier.padding(end = 8.dp)) {
+                        IconButton(onClick = { showFileSortMenu = true }) {
+                            Icon(Icons.Default.Sort, "排序")
+                        }
+                        DropdownMenu(
+                            expanded = showFileSortMenu,
+                            onDismissRequest = { showFileSortMenu = false }
+                        ) {
+                            Text(
+                                "文件排序",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                            FileSortType.entries.forEach { sortType ->
+                                DropdownMenuItem(
+                                    text = { Text(sortType.displayName) },
+                                    onClick = {
+                                        onFileSortChange(sortType)
+                                        showFileSortMenu = false
+                                    },
+                                    leadingIcon = {
+                                        if (sortType == fileSortType) {
+                                            Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
+                                        }
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
+
 
             if (items.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
