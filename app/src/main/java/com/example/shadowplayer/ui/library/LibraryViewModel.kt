@@ -17,7 +17,6 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.io.File
 import java.net.URLDecoder
 import javax.inject.Inject
 
@@ -73,6 +72,10 @@ class LibraryViewModel @Inject constructor(
     val currentPlayingAudioId: StateFlow<Long> = sentencePlayer.state
         .map { sentencePlayer.getCurrentAudioId() }
         .stateIn(viewModelScope, SharingStarted.Lazily, -1L)
+
+    // [问题3] 下拉刷新状态
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
     // ===== 核心修复：提取 Document ID =====
     private fun extractDocumentId(uri: String): String {
@@ -166,26 +169,38 @@ class LibraryViewModel @Inject constructor(
     private val _expandedFolders = MutableStateFlow<Set<String>>(emptySet())
     val expandedFolders: StateFlow<Set<String>> = _expandedFolders.asStateFlow()
 
-    // 文件夹内容
+    // [问题2修复] 文件夹内容 - 添加搜索过滤
     val folderContent: StateFlow<List<FileSystemItem>> = combine(
         _currentFolderDocId,
         scanFolders,
-        allAudioFiles
-    ) { currentDocId, roots, allFiles ->
+        allAudioFiles,
+        _searchQuery  // [问题2修复] 加入搜索查询
+    ) { currentDocId, roots, allFiles, query ->
         if (currentDocId == null) {
+            // 根目录：显示扫描文件夹列表
             roots.map { folder ->
                 val folderDocId = extractDocumentId(folder.path)
-                val count = allFiles.count { file ->
+                // 统计该文件夹下的音频数量（考虑搜索过滤）
+                val filesInFolder = allFiles.filter { file ->
                     val fileDocId = extractDocumentId(file.path)
                     fileDocId == folderDocId ||
                             fileDocId.startsWith("$folderDocId%2F") ||
                             fileDocId.startsWith("$folderDocId/")
                 }
-                FileSystemItem.Folder(folder.name, folderDocId, count)
+                val filteredCount = if (query.isBlank()) {
+                    filesInFolder.size
+                } else {
+                    filesInFolder.count { it.title.contains(query, ignoreCase = true) }
+                }
+                FileSystemItem.Folder(folder.name, folderDocId, filteredCount)
+            }.let { folders ->
+                // [问题2修复] 如果有搜索词，只显示包含匹配文件的文件夹
+                if (query.isBlank()) folders else folders.filter { it.audioCount > 0 }
             }
         } else {
             val items = mutableListOf<FileSystemItem>()
             val processedSubFolders = mutableSetOf<String>()
+            val subFolderFiles = mutableMapOf<String, MutableList<AudioFile>>()
 
             val prefixWithEncodedSep = "$currentDocId%2F"
             val prefixWithNormalSep = "$currentDocId/"
@@ -207,6 +222,7 @@ class LibraryViewModel @Inject constructor(
                     val nextNormalSep = remainder.indexOf("/")
 
                     if (nextEncodedSep != -1 || nextNormalSep != -1) {
+                        // 这是子文件夹中的文件
                         val separatorIndex = when {
                             nextEncodedSep != -1 && nextNormalSep != -1 -> minOf(nextEncodedSep, nextNormalSep)
                             nextEncodedSep != -1 -> nextEncodedSep
@@ -215,26 +231,40 @@ class LibraryViewModel @Inject constructor(
                         val subFolderName = remainder.substring(0, separatorIndex)
                         val subFolderDocId = matchedPrefix + subFolderName
 
+                        // 收集子文件夹中的文件用于搜索过滤
+                        subFolderFiles.getOrPut(subFolderDocId) { mutableListOf() }.add(file)
+
                         if (!processedSubFolders.contains(subFolderDocId)) {
                             processedSubFolders.add(subFolderDocId)
-
-                            val displayName = try {
-                                URLDecoder.decode(subFolderName, "UTF-8")
-                            } catch (e: Exception) {
-                                subFolderName
-                            }
-
-                            val subCount = allFiles.count { f ->
-                                val fDocId = extractDocumentId(f.path)
-                                fDocId.startsWith("$subFolderDocId%2F") ||
-                                        fDocId.startsWith("$subFolderDocId/")
-                            }
-
-                            items.add(FileSystemItem.Folder(displayName, subFolderDocId, subCount))
                         }
                     } else {
-                        items.add(FileSystemItem.File(file))
+                        // 当前文件夹中的文件
+                        // [问题2修复] 应用搜索过滤
+                        if (query.isBlank() || file.title.contains(query, ignoreCase = true)) {
+                            items.add(FileSystemItem.File(file))
+                        }
                     }
+                }
+            }
+
+            // [问题2修复] 处理子文件夹（考虑搜索过滤）
+            processedSubFolders.forEach { subFolderDocId ->
+                val filesInSubFolder = subFolderFiles[subFolderDocId] ?: emptyList()
+                val matchingCount = if (query.isBlank()) {
+                    filesInSubFolder.size
+                } else {
+                    filesInSubFolder.count { it.title.contains(query, ignoreCase = true) }
+                }
+
+                // 只有当搜索为空或有匹配文件时才显示文件夹
+                if (query.isBlank() || matchingCount > 0) {
+                    val subFolderName = subFolderDocId.substringAfterLast("%2F").substringAfterLast("/")
+                    val displayName = try {
+                        URLDecoder.decode(subFolderName, "UTF-8")
+                    } catch (e: Exception) {
+                        subFolderName
+                    }
+                    items.add(FileSystemItem.Folder(displayName, subFolderDocId, matchingCount))
                 }
             }
 
@@ -267,6 +297,17 @@ class LibraryViewModel @Inject constructor(
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+
+    init {
+        // [问题3] 应用启动时静默扫描所有文件夹
+        viewModelScope.launch {
+            // 等待 scanFolders 加载完成
+            scanFolders.first { it.isNotEmpty() || true }
+            // 延迟一点启动扫描，避免影响启动性能
+            kotlinx.coroutines.delay(1000)
+            scanAllFoldersIncremental()
+        }
+    }
 
     // --- 辅助函数 ---
     private fun getParentFolderPath(filePath: String): String {
@@ -424,7 +465,7 @@ class LibraryViewModel @Inject constructor(
 
             val folder = ScanFolder(path = path, name = name)
             repository.insertScanFolder(folder)
-            scanFolder(folder)
+            scanFolderIncremental(folder)
         }
     }
 
@@ -436,46 +477,111 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    fun scanFolder(folder: ScanFolder) {
+    /**
+     * [问题3] 下拉刷新
+     */
+    fun refreshFolders() {
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            try {
+                scanAllFoldersIncremental()
+            } finally {
+                _isRefreshing.value = false
+            }
+        }
+    }
+
+    /**
+     * [问题3修复] 增量扫描单个文件夹
+     * - 新文件 → 插入
+     * - 已删除文件 → 从数据库移除
+     */
+    fun scanFolderIncremental(folder: ScanFolder) {
         viewModelScope.launch(Dispatchers.IO) {
             _isScanning.value = true
             try {
                 val uri = Uri.parse(folder.path)
                 val docFile = DocumentFile.fromTreeUri(context, uri)
-                val existingPaths = repository.getAllPaths().toHashSet()
+
+                // 获取数据库中该文件夹下的所有文件路径
+                val folderDocId = extractDocumentId(folder.path)
+                val existingPaths = repository.getAllPaths().filter { path ->
+                    val fileDocId = extractDocumentId(path)
+                    fileDocId.startsWith("$folderDocId%2F") ||
+                            fileDocId.startsWith("$folderDocId/") ||
+                            fileDocId == folderDocId
+                }.toHashSet()
+
+                val foundPaths = mutableSetOf<String>()
                 val newAudioFiles = mutableListOf<AudioFile>()
 
-                docFile?.let { scanDirectory(it, newAudioFiles, existingPaths) }
+                // 扫描实际文件
+                docFile?.let { scanDirectoryIncremental(it, newAudioFiles, existingPaths, foundPaths) }
 
+                // 插入新文件
                 if (newAudioFiles.isNotEmpty()) {
                     repository.insertAllIgnore(newAudioFiles)
+                    Log.d("LibraryViewModel", "Added ${newAudioFiles.size} new files")
                 }
+
+                // [问题3修复] 删除数据库中存在但实际已被删除的文件
+                val deletedPaths = existingPaths - foundPaths
+                if (deletedPaths.isNotEmpty()) {
+                    deletedPaths.forEach { path ->
+                        repository.deleteAudioByPath(path)
+                    }
+                    Log.d("LibraryViewModel", "Removed ${deletedPaths.size} deleted files")
+                }
+
             } catch (e: Exception) {
-                Log.e("LibraryViewModel", "Scan failed", e)
+                Log.e("LibraryViewModel", "Incremental scan failed", e)
             } finally {
                 _isScanning.value = false
             }
         }
     }
 
-    fun scanAllFolders() {
+    @Deprecated("Use scanFolderIncremental instead")
+    fun scanFolder(folder: ScanFolder) {
+        scanFolderIncremental(folder)
+    }
+
+    /**
+     * [问题3修复] 增量扫描所有文件夹
+     */
+    fun scanAllFoldersIncremental() {
         viewModelScope.launch {
-            scanFolders.value.forEach { scanFolder(it) }
+            scanFolders.value.forEach { scanFolderIncremental(it) }
         }
     }
 
-    private fun scanDirectory(directory: DocumentFile, results: MutableList<AudioFile>, existingPaths: HashSet<String>) {
+    fun scanAllFolders() {
+        scanAllFoldersIncremental()
+    }
+
+    /**
+     * [问题3修复] 增量扫描目录
+     */
+    private fun scanDirectoryIncremental(
+        directory: DocumentFile,
+        newFiles: MutableList<AudioFile>,
+        existingPaths: HashSet<String>,
+        foundPaths: MutableSet<String>
+    ) {
         directory.listFiles().forEach { file ->
             if (file.isDirectory) {
-                scanDirectory(file, results, existingPaths)
+                scanDirectoryIncremental(file, newFiles, existingPaths, foundPaths)
             } else {
                 val fileName = file.name ?: ""
                 val filePath = file.uri.toString()
 
-                if (existingPaths.contains(filePath)) return@forEach
-
                 if (isAudioFile(fileName)) {
-                    createAudioFile(file, filePath)?.let { results.add(it) }
+                    foundPaths.add(filePath)
+
+                    // 只有不存在的文件才添加
+                    if (!existingPaths.contains(filePath)) {
+                        createAudioFile(file, filePath)?.let { newFiles.add(it) }
+                    }
                 }
             }
         }

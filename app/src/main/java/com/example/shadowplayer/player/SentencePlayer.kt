@@ -21,6 +21,8 @@ class SentencePlayer @Inject constructor(
     companion object {
         private const val KEY_LAST_PLAYED_AUDIO_ID = "last_played_audio_id"
         private const val POSITION_SAVE_INTERVAL_MS = 10000L
+        // [问题4修复] 容忍范围：如果已经播放到下一句起点附近，不回跳
+        private const val SEEK_TOLERANCE_MS = 150L
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -97,6 +99,15 @@ class SentencePlayer @Inject constructor(
      */
     fun isCurrentlyPlaying(): Boolean {
         return _state.value.isPlaying
+    }
+
+    /**
+     * [问题4修复] 判断是否为连续播放模式
+     * 当 repeatCount=1 且 interval=0 且 autoNext=true 时，启用连续播放模式
+     */
+    private fun isContinuousPlaybackMode(): Boolean {
+        val settings = _settings.value
+        return settings.repeatCount == 1 && settings.repeatInterval == 0L && settings.autoNext
     }
 
     /**
@@ -383,6 +394,12 @@ class SentencePlayer @Inject constructor(
         val state = _state.value
         val settings = _settings.value
 
+        // [问题4修复] 连续播放模式：不重复、无间隔、自动下一句
+        if (isContinuousPlaybackMode()) {
+            handleContinuousPlayback()
+            return
+        }
+
         if (state.currentRepeat < settings.repeatCount) {
             startInterval()
         } else {
@@ -393,6 +410,34 @@ class SentencePlayer @Inject constructor(
                     nextSentence()
                 }
             } else {
+                pause()
+            }
+        }
+    }
+
+    /**
+     * [问题4修复] 连续播放模式处理
+     * 只更新当前句子索引，不执行 seek 操作，让音频自然流畅播放
+     */
+    private fun handleContinuousPlayback() {
+        val state = _state.value
+        val currentPosition = audioPlayer.getCurrentPosition()
+
+        // 查找当前播放位置对应的句子索引
+        val newIndex = LrcParser.findSentenceIndex(state.sentences, currentPosition)
+
+        if (newIndex != state.currentIndex && newIndex >= 0 && newIndex < state.sentences.size) {
+            // 只更新索引，不 seek
+            _state.value = state.copy(
+                currentIndex = newIndex,
+                currentRepeat = 1
+            )
+        }
+
+        // 如果已经是最后一句且播放完毕
+        if (state.currentIndex >= state.sentences.size - 1) {
+            val lastSentence = state.sentences.lastOrNull()
+            if (lastSentence != null && currentPosition >= lastSentence.endTime) {
                 pause()
             }
         }
@@ -442,9 +487,41 @@ class SentencePlayer @Inject constructor(
             }
             if (isActive) {
                 _state.value = _state.value.copy(isInInterval = false, intervalCountdown = 0, currentRepeat = 1)
-                nextSentence()
-                play()
+                moveToNextSentenceSmooth()
             }
+        }
+    }
+
+    /**
+     * [问题4修复] 平滑切换到下一句
+     * 如果当前播放位置已经在下一句的容忍范围内，不执行 seek
+     */
+    private fun moveToNextSentenceSmooth() {
+        val state = _state.value
+        val nextIndex = state.currentIndex + 1
+        if (nextIndex >= state.sentences.size) {
+            pause()
+            return
+        }
+
+        val nextSentence = state.sentences[nextIndex]
+        val currentPosition = audioPlayer.getCurrentPosition()
+
+        // 检查是否需要 seek
+        val distanceToNextStart = currentPosition - nextSentence.startTime
+        if (distanceToNextStart >= 0 && distanceToNextStart < SEEK_TOLERANCE_MS) {
+            // 已经在下一句的起点附近，不需要 seek，只更新状态
+            _state.value = state.copy(
+                currentIndex = nextIndex,
+                currentRepeat = 1,
+                currentPosition = currentPosition
+            )
+            audioPlayer.play()
+            startPositionUpdate()
+        } else {
+            // 需要 seek
+            nextSentence()
+            play()
         }
     }
 
@@ -468,8 +545,27 @@ class SentencePlayer @Inject constructor(
         positionUpdateJob = scope.launch {
             while (isActive) {
                 audioPlayer.updatePosition()
-                delay(100)
+                // [问题4修复] 连续播放模式下也需要更新句子索引
+                if (isContinuousPlaybackMode()) {
+                    updateCurrentIndexByPosition()
+                }
+                delay(50) // 减少到50ms，提高响应速度
             }
+        }
+    }
+
+    /**
+     * [问题4修复] 根据当前播放位置更新句子索引（不 seek）
+     */
+    private fun updateCurrentIndexByPosition() {
+        val state = _state.value
+        if (state.sentences.isEmpty()) return
+
+        val currentPosition = audioPlayer.getCurrentPosition()
+        val newIndex = LrcParser.findSentenceIndex(state.sentences, currentPosition)
+
+        if (newIndex != state.currentIndex && newIndex >= 0) {
+            _state.value = state.copy(currentIndex = newIndex)
         }
     }
 

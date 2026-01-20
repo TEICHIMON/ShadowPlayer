@@ -20,6 +20,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +56,7 @@ fun LibraryScreen(
     val expandedFolders by viewModel.expandedFolders.collectAsState()
 
     val isScanning by viewModel.isScanning.collectAsState()
+    val isRefreshing by viewModel.isRefreshing.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isSelectionMode by viewModel.isSelectionMode.collectAsState()
     val selectedIds by viewModel.selectedAudioIds.collectAsState()
@@ -223,6 +226,7 @@ fun LibraryScreen(
                         )
                     }
                     LibraryTab.FOLDERS -> {
+                        // [问题3修复] 添加下拉刷新
                         FoldersExplorerSection(
                             currentPath = currentFolderPath,
                             items = folderContent,
@@ -230,6 +234,8 @@ fun LibraryScreen(
                             expandedFolders = expandedFolders,
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
+                            isRefreshing = isRefreshing,
+                            onRefresh = { viewModel.refreshFolders() },
                             onNavigate = { viewModel.navigateToFolder(it) },
                             onNavigateUp = { viewModel.navigateUp() },
                             onToggleExpand = { viewModel.toggleFolderExpanded(it) },
@@ -628,7 +634,8 @@ fun CompactAudioFileItem(
     }
 }
 
-// 文件夹浏览器视图
+// [问题3修复] 文件夹浏览器视图 - 添加下拉刷新
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FoldersExplorerSection(
     currentPath: String?,
@@ -637,6 +644,8 @@ fun FoldersExplorerSection(
     expandedFolders: Set<String>,
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit,
     onNavigate: (String) -> Unit,
     onNavigateUp: () -> Unit,
     onToggleExpand: (String) -> Unit,
@@ -648,89 +657,108 @@ fun FoldersExplorerSection(
     onRemoveScanFolder: (FileSystemItem.Folder) -> Unit,
     onScanAll: () -> Unit
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        if (currentPath == null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(onClick = onAddScanFolder) {
-                    Icon(Icons.Default.CreateNewFolder, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("添加文件夹")
-                }
-                OutlinedButton(onClick = onScanAll) {
-                    Icon(Icons.Default.Refresh, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("扫描全部")
-                }
-            }
-        } else {
-            Surface(
-                onClick = onNavigateUp,
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-            ) {
+    val pullToRefreshState = rememberPullToRefreshState()
+
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = onRefresh,
+        state = pullToRefreshState,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (currentPath == null) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        Icons.Default.ArrowBack,
-                        null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        "返回上一级",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Button(onClick = onAddScanFolder) {
+                        Icon(Icons.Default.CreateNewFolder, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("添加文件夹")
+                    }
+                    OutlinedButton(onClick = onScanAll) {
+                        Icon(Icons.Default.Refresh, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("扫描全部")
+                    }
+                }
+            } else {
+                Surface(
+                    onClick = onNavigateUp,
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.ArrowBack,
+                            null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            "返回上一级",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
-        }
 
-        if (items.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = if (currentPath == null) "点击上方按钮添加音频文件夹" else "此文件夹为空",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 16.dp)
-            ) {
-                items(items) { item ->
-                    when (item) {
-                        is FileSystemItem.Folder -> {
-                            FolderListItem(
-                                folder = item,
-                                isRoot = currentPath == null,
-                                onNavigate = onNavigate,
-                                onRemove = if (currentPath == null) {
-                                    { onRemoveScanFolder(item) }
-                                } else null
-                            )
-                        }
-                        is FileSystemItem.File -> {
-                            CompactAudioFileItem(
-                                audioFile = item.audioFile,
-                                isCurrentlyPlaying = item.audioFile.id == currentPlayingAudioId,
-                                isSelectionMode = isSelectionMode,
-                                isSelected = selectedIds.contains(item.audioFile.id),
-                                onClick = { onFileClick(item.audioFile) },
-                                onLongClick = { onFileLongClick(item.audioFile) },
-                                onFavoriteClick = { onFavoriteClick(item.audioFile) },
-                                onAddTagClick = { onAddTagClick(item.audioFile) }
+            if (items.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = if (currentPath == null) "点击上方按钮添加音频文件夹" else "此文件夹为空",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (currentPath == null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "下拉刷新可扫描新增文件",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
                         }
                     }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    items(items) { item ->
+                        when (item) {
+                            is FileSystemItem.Folder -> {
+                                FolderListItem(
+                                    folder = item,
+                                    isRoot = currentPath == null,
+                                    onNavigate = onNavigate,
+                                    onRemove = if (currentPath == null) {
+                                        { onRemoveScanFolder(item) }
+                                    } else null
+                                )
+                            }
+                            is FileSystemItem.File -> {
+                                CompactAudioFileItem(
+                                    audioFile = item.audioFile,
+                                    isCurrentlyPlaying = item.audioFile.id == currentPlayingAudioId,
+                                    isSelectionMode = isSelectionMode,
+                                    isSelected = selectedIds.contains(item.audioFile.id),
+                                    onClick = { onFileClick(item.audioFile) },
+                                    onLongClick = { onFileLongClick(item.audioFile) },
+                                    onFavoriteClick = { onFavoriteClick(item.audioFile) },
+                                    onAddTagClick = { onAddTagClick(item.audioFile) }
+                                )
+                            }
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                    }
                 }
             }
         }
