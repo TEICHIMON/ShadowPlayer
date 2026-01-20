@@ -1,9 +1,9 @@
 package com.example.shadowplayer.ui.library
 
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -63,7 +63,6 @@ fun LibraryScreen(
 
     val audioDetails by viewModel.audioDetailsState.collectAsState()
 
-    // 当前正在播放的音频ID
     val currentPlayingAudioId by viewModel.currentPlayingAudioId.collectAsState()
 
     var selectedTab by remember { mutableStateOf(LibraryTab.RECORDS) }
@@ -102,7 +101,6 @@ fun LibraryScreen(
         LibraryTab.FOLDERS -> folderContent.mapNotNull { (it as? FileSystemItem.File)?.audioFile }
     }
 
-    // 包装 onFileSelected，在选择文件时设置播放列表
     val handleFileSelected: (AudioFile) -> Unit = { audioFile ->
         viewModel.setPlaylistForAudio(audioFile)
         onFileSelected(audioFile)
@@ -184,7 +182,7 @@ fun LibraryScreen(
                             onFileLongClick = { viewModel.showAudioDetails(it) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
                             onAddTagClick = { showAddToTagDialog = it },
-                            onDeleteGroup = { folderPath -> viewModel.clearFolderPlayHistory(folderPath) }  // 新增
+                            onDeleteGroup = { folderPath -> viewModel.clearFolderPlayHistory(folderPath) }
                         )
                     }
                     LibraryTab.FAVORITES -> {
@@ -230,7 +228,6 @@ fun LibraryScreen(
                         )
                     }
                     LibraryTab.FOLDERS -> {
-                        // [问题3修复] 添加下拉刷新
                         FoldersExplorerSection(
                             currentPath = currentFolderPath,
                             items = folderContent,
@@ -239,8 +236,8 @@ fun LibraryScreen(
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
                             isRefreshing = isRefreshing,
-                            folderSortType = folderSortType,  // 新增
-                            fileSortType = fileSortType,      // 新增
+                            folderSortType = folderSortType,
+                            fileSortType = fileSortType,
                             onRefresh = { viewModel.refreshFolders() },
                             onNavigate = { viewModel.navigateToFolder(it) },
                             onNavigateUp = { viewModel.navigateUp() },
@@ -255,8 +252,8 @@ fun LibraryScreen(
                                 scanFolder?.let { viewModel.removeScanFolder(it) }
                             },
                             onScanAll = { viewModel.scanAllFolders() },
-                            onFolderSortChange = { viewModel.setFolderSortType(it) },  // 新增
-                            onFileSortChange = { sortType ->                           // 新增
+                            onFolderSortChange = { viewModel.setFolderSortType(it) },
+                            onFileSortChange = { sortType ->
                                 currentFolderPath?.let { viewModel.setFileSortType(it, sortType) }
                             }
                         )
@@ -266,7 +263,6 @@ fun LibraryScreen(
         }
     }
 
-    // Dialogs
     if (showAddTagDialog) {
         AddTagDialog(
             availableParents = allTags,
@@ -386,7 +382,6 @@ private fun formatTimestamp(timestamp: Long): String {
     return sdf.format(java.util.Date(timestamp))
 }
 
-// [问题4修改] 记录Tab - 按文件夹分组显示，默认折叠
 @Composable
 fun RecordsGroupedSection(
     groups: List<FolderGroup>,
@@ -431,7 +426,7 @@ fun RecordsGroupedSection(
                     onFileLongClick = onFileLongClick,
                     onFavoriteClick = onFavoriteClick,
                     onAddTagClick = onAddTagClick,
-                    onDeleteGroup = { onDeleteGroup(group.folderPath) }  // 新增
+                    onDeleteGroup = { onDeleteGroup(group.folderPath) }
                 )
             }
         }
@@ -448,7 +443,7 @@ fun FolderGroupCard(
     onFileLongClick: (AudioFile) -> Unit,
     onFavoriteClick: (AudioFile) -> Unit,
     onAddTagClick: (AudioFile) -> Unit,
-    onDeleteGroup: () -> Unit  // 新增参数
+    onDeleteGroup: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
@@ -501,7 +496,6 @@ fun FolderGroupCard(
                         Spacer(modifier = Modifier.width(4.dp))
                     }
 
-                    // 三点菜单
                     Box {
                         IconButton(onClick = { showMenu = true }) {
                             Icon(Icons.Default.MoreVert, contentDescription = "更多")
@@ -557,7 +551,6 @@ fun FolderGroupCard(
         }
     }
 
-    // 删除确认对话框
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
@@ -581,7 +574,6 @@ fun FolderGroupCard(
     }
 }
 
-// [问题4修改] 紧凑型音频项 - 添加正在播放高亮
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CompactAudioFileItem(
@@ -596,7 +588,6 @@ fun CompactAudioFileItem(
 ) {
     val haptic = LocalHapticFeedback.current
 
-    // 背景色：正在播放 > 选中 > 普通
     val backgroundColor = when {
         isCurrentlyPlaying -> MaterialTheme.colorScheme.primaryContainer
         isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
@@ -625,7 +616,6 @@ fun CompactAudioFileItem(
             )
             Spacer(modifier = Modifier.width(12.dp))
         } else {
-            // 正在播放显示动画图标，否则显示音乐图标
             if (isCurrentlyPlaying) {
                 Icon(
                     Icons.Default.GraphicEq,
@@ -688,7 +678,6 @@ fun CompactAudioFileItem(
     }
 }
 
-// [问题3修复] 文件夹浏览器视图 - 添加下拉刷新
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FoldersExplorerSection(
@@ -699,8 +688,8 @@ fun FoldersExplorerSection(
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
     isRefreshing: Boolean,
-    folderSortType: FolderSortType,  // 新增
-    fileSortType: FileSortType,      // 新增
+    folderSortType: FolderSortType,
+    fileSortType: FileSortType,
     onRefresh: () -> Unit,
     onNavigate: (String) -> Unit,
     onNavigateUp: () -> Unit,
@@ -712,8 +701,8 @@ fun FoldersExplorerSection(
     onAddScanFolder: () -> Unit,
     onRemoveScanFolder: (FileSystemItem.Folder) -> Unit,
     onScanAll: () -> Unit,
-    onFolderSortChange: (FolderSortType) -> Unit,  // 新增
-    onFileSortChange: (FileSortType) -> Unit       // 新增
+    onFolderSortChange: (FolderSortType) -> Unit,
+    onFileSortChange: (FileSortType) -> Unit
 ) {
     val pullToRefreshState = rememberPullToRefreshState()
     var showFolderSortMenu by remember { mutableStateOf(false) }
@@ -799,6 +788,38 @@ fun FoldersExplorerSection(
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.primary
                             )
+                        }
+                    }
+
+                    // [修复3] 在子文件夹视图中添加“文件夹排序”按钮
+                    Box {
+                        IconButton(onClick = { showFolderSortMenu = true }) {
+                            Icon(Icons.Default.Folder, null) // 使用不同图标区分文件夹排序
+                        }
+                        DropdownMenu(
+                            expanded = showFolderSortMenu,
+                            onDismissRequest = { showFolderSortMenu = false }
+                        ) {
+                            Text(
+                                "文件夹排序",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                            FolderSortType.entries.forEach { sortType ->
+                                DropdownMenuItem(
+                                    text = { Text(sortType.displayName) },
+                                    onClick = {
+                                        onFolderSortChange(sortType)
+                                        showFolderSortMenu = false
+                                    },
+                                    leadingIcon = {
+                                        if (sortType == folderSortType) {
+                                            Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
+                                        }
+                                    }
+                                )
+                            }
                         }
                     }
 
@@ -938,8 +959,6 @@ fun FolderListItem(
         modifier = Modifier.clickable { onNavigate(folder.path) }
     )
 }
-
-// ---------------- 其他组件 ----------------
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
