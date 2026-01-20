@@ -47,6 +47,20 @@ data class AudioFileDetails(
     val hasSubtitle: Boolean,
     val parentFolder: String
 )
+enum class FolderSortType(val displayName: String) {
+    NAME_ASC("名称 A→Z"),
+    NAME_DESC("名称 Z→A"),
+    AUDIO_COUNT_DESC("文件数量 多→少"),
+    AUDIO_COUNT_ASC("文件数量 少→多")
+}
+
+enum class FileSortType(val displayName: String) {
+    NAME_ASC("名称 A→Z"),
+    NAME_DESC("名称 Z→A"),
+    PLAY_COUNT_DESC("播放次数 多→少"),
+    PLAY_COUNT_ASC("播放次数 少→多"),
+    RECENT_PLAY("最近播放")
+}
 
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
@@ -56,6 +70,28 @@ class LibraryViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val _searchQuery = MutableStateFlow("")
+
+    // 文件夹排序（全局）
+    private val _folderSortType = MutableStateFlow(FolderSortType.NAME_ASC)
+
+    val folderSortType: StateFlow<FolderSortType> = _folderSortType.asStateFlow()
+
+    // 文件排序（按文件夹独立记忆）
+    private val _fileSortByFolder = MutableStateFlow<Map<String, FileSortType>>(emptyMap())
+    val fileSortByFolder: StateFlow<Map<String, FileSortType>> = _fileSortByFolder.asStateFlow()
+
+    fun setFolderSortType(sortType: FolderSortType) {
+        _folderSortType.value = sortType
+    }
+
+    fun setFileSortType(folderPath: String, sortType: FileSortType) {
+        _fileSortByFolder.value = _fileSortByFolder.value + (folderPath to sortType)
+    }
+
+    fun getFileSortType(folderPath: String?): FileSortType {
+        return folderPath?.let { _fileSortByFolder.value[it] } ?: FileSortType.NAME_ASC
+    }
+
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
     private val _isSelectionMode = MutableStateFlow(false)
@@ -120,7 +156,7 @@ class LibraryViewModel @Inject constructor(
             val filteredFiles = if (query.isBlank()) {
                 folderAudioFiles
             } else {
-                folderAudioFiles.filter { it.title.contains(query, ignoreCase = true) }
+                folderAudioFiles.filter {it.title.lowercase().contains(query.lowercase()) }
             }
 
             if (filteredFiles.isEmpty()) return@mapNotNull null
@@ -148,7 +184,7 @@ class LibraryViewModel @Inject constructor(
         repository.getFavorites(),
         _searchQuery
     ) { files, query ->
-        if (query.isBlank()) files else files.filter { it.title.contains(query, ignoreCase = true) }
+        if (query.isBlank()) files else files.filter { it.title.lowercase().contains(query.lowercase()) }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     // 历史记录（扁平列表，用于HISTORY tab）
@@ -156,7 +192,7 @@ class LibraryViewModel @Inject constructor(
         repository.getHistory(),
         _searchQuery
     ) { files, query ->
-        if (query.isBlank()) files else files.filter { it.title.contains(query, ignoreCase = true) }
+        if (query.isBlank()) files else files.filter { it.title.lowercase().contains(query.lowercase()) }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val scanFolders: StateFlow<List<ScanFolder>> = repository.getAllScanFolders()
@@ -174,13 +210,23 @@ class LibraryViewModel @Inject constructor(
         _currentFolderDocId,
         scanFolders,
         allAudioFiles,
-        _searchQuery  // [问题2修复] 加入搜索查询
-    ) { currentDocId, roots, allFiles, query ->
+        _searchQuery,
+        _folderSortType,
+        _fileSortByFolder
+    ) { values ->
+        val currentDocId = values[0] as String?
+        val roots = values[1] as List<ScanFolder>
+        val allFiles = values[2] as List<AudioFile>
+        val query = values[3] as String
+        val folderSort = values[4] as FolderSortType
+        val fileSortMap = values[5] as Map<String, FileSortType>
+
+        val fileSort = currentDocId?.let { fileSortMap[it] } ?: FileSortType.NAME_ASC
+
         if (currentDocId == null) {
             // 根目录：显示扫描文件夹列表
-            roots.map { folder ->
+            val folders = roots.map { folder ->
                 val folderDocId = extractDocumentId(folder.path)
-                // 统计该文件夹下的音频数量（考虑搜索过滤）
                 val filesInFolder = allFiles.filter { file ->
                     val fileDocId = extractDocumentId(file.path)
                     fileDocId == folderDocId ||
@@ -190,12 +236,19 @@ class LibraryViewModel @Inject constructor(
                 val filteredCount = if (query.isBlank()) {
                     filesInFolder.size
                 } else {
-                    filesInFolder.count { it.title.contains(query, ignoreCase = true) }
+                    filesInFolder.count { it.title.lowercase().contains(query.lowercase()) }
                 }
                 FileSystemItem.Folder(folder.name, folderDocId, filteredCount)
             }.let { folders ->
-                // [问题2修复] 如果有搜索词，只显示包含匹配文件的文件夹
                 if (query.isBlank()) folders else folders.filter { it.audioCount > 0 }
+            }
+
+            // 应用文件夹排序
+            when (folderSort) {
+                FolderSortType.NAME_ASC -> folders.sortedBy { it.name.lowercase() }
+                FolderSortType.NAME_DESC -> folders.sortedByDescending { it.name.lowercase() }
+                FolderSortType.AUDIO_COUNT_DESC -> folders.sortedByDescending { it.audioCount }
+                FolderSortType.AUDIO_COUNT_ASC -> folders.sortedBy { it.audioCount }
             }
         } else {
             val items = mutableListOf<FileSystemItem>()
@@ -222,7 +275,6 @@ class LibraryViewModel @Inject constructor(
                     val nextNormalSep = remainder.indexOf("/")
 
                     if (nextEncodedSep != -1 || nextNormalSep != -1) {
-                        // 这是子文件夹中的文件
                         val separatorIndex = when {
                             nextEncodedSep != -1 && nextNormalSep != -1 -> minOf(nextEncodedSep, nextNormalSep)
                             nextEncodedSep != -1 -> nextEncodedSep
@@ -231,32 +283,27 @@ class LibraryViewModel @Inject constructor(
                         val subFolderName = remainder.substring(0, separatorIndex)
                         val subFolderDocId = matchedPrefix + subFolderName
 
-                        // 收集子文件夹中的文件用于搜索过滤
                         subFolderFiles.getOrPut(subFolderDocId) { mutableListOf() }.add(file)
 
                         if (!processedSubFolders.contains(subFolderDocId)) {
                             processedSubFolders.add(subFolderDocId)
                         }
                     } else {
-                        // 当前文件夹中的文件
-                        // [问题2修复] 应用搜索过滤
-                        if (query.isBlank() || file.title.contains(query, ignoreCase = true)) {
+                        if (query.isBlank() || file.title.lowercase().contains(query.lowercase())) {
                             items.add(FileSystemItem.File(file))
                         }
                     }
                 }
             }
 
-            // [问题2修复] 处理子文件夹（考虑搜索过滤）
             processedSubFolders.forEach { subFolderDocId ->
                 val filesInSubFolder = subFolderFiles[subFolderDocId] ?: emptyList()
                 val matchingCount = if (query.isBlank()) {
                     filesInSubFolder.size
                 } else {
-                    filesInSubFolder.count { it.title.contains(query, ignoreCase = true) }
+                    filesInSubFolder.count { it.title.lowercase().contains(query.lowercase()) }
                 }
 
-                // 只有当搜索为空或有匹配文件时才显示文件夹
                 if (query.isBlank() || matchingCount > 0) {
                     val subFolderName = subFolderDocId.substringAfterLast("%2F").substringAfterLast("/")
                     val displayName = try {
@@ -268,12 +315,28 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
-            items.sortedBy {
-                when (it) {
-                    is FileSystemItem.Folder -> "0${it.name.lowercase()}"
-                    is FileSystemItem.File -> "1${it.audioFile.title.lowercase()}"
-                }
+            // 分离文件夹和文件
+            val folders = items.filterIsInstance<FileSystemItem.Folder>()
+            val files = items.filterIsInstance<FileSystemItem.File>()
+
+            // 文件夹排序（全局）
+            val sortedFolders = when (folderSort) {
+                FolderSortType.NAME_ASC -> folders.sortedBy { it.name.lowercase() }
+                FolderSortType.NAME_DESC -> folders.sortedByDescending { it.name.lowercase() }
+                FolderSortType.AUDIO_COUNT_DESC -> folders.sortedByDescending { it.audioCount }
+                FolderSortType.AUDIO_COUNT_ASC -> folders.sortedBy { it.audioCount }
             }
+
+            // 文件排序（独立记忆）
+            val sortedFiles = when (fileSort) {
+                FileSortType.NAME_ASC -> files.sortedBy { it.audioFile.title.lowercase() }
+                FileSortType.NAME_DESC -> files.sortedByDescending { it.audioFile.title.lowercase() }
+                FileSortType.PLAY_COUNT_DESC -> files.sortedByDescending { it.audioFile.playCount }
+                FileSortType.PLAY_COUNT_ASC -> files.sortedBy { it.audioFile.playCount }
+                FileSortType.RECENT_PLAY -> files.sortedByDescending { it.audioFile.lastPlayedAt ?: 0L }
+            }
+
+            sortedFolders + sortedFiles
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
@@ -292,7 +355,7 @@ class LibraryViewModel @Inject constructor(
         },
         _searchQuery
     ) { files, query ->
-        if (query.isBlank()) files else files.filter { it.title.contains(query, ignoreCase = true) }
+        if (query.isBlank()) files else files.filter { it.title.lowercase().contains(query.lowercase()) }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     private val _isScanning = MutableStateFlow(false)
@@ -652,5 +715,17 @@ class LibraryViewModel @Inject constructor(
     fun setPlaylistForAudio(audioFile: AudioFile) {
         val (playlist, index) = getPlaylistForAudio(audioFile)
         sentencePlayer.setPlaylist(playlist, index)
+    }
+
+    fun clearFolderPlayHistory(folderPath: String) {
+        viewModelScope.launch {
+            val allFiles = allAudioFiles.value
+            val idsToUpdate = allFiles
+                .filter { getParentFolderPath(it.path) == folderPath }
+                .map { it.id }
+            if (idsToUpdate.isNotEmpty()) {
+                repository.clearPlayHistory(idsToUpdate)
+            }
+        }
     }
 }

@@ -161,6 +161,20 @@ fun SelectableTextView(
                 setTextIsSelectable(true)
                 maxLines = 10
                 ellipsize = TextUtils.TruncateAt.END
+
+                // 启用 ACTION_PROCESS_TEXT 支持
+                customSelectionActionModeCallback = object : android.view.ActionMode.Callback {
+                    override fun onCreateActionMode(mode: android.view.ActionMode?, menu: android.view.Menu?): Boolean {
+                        return true
+                    }
+                    override fun onPrepareActionMode(mode: android.view.ActionMode?, menu: android.view.Menu?): Boolean {
+                        return true
+                    }
+                    override fun onActionItemClicked(mode: android.view.ActionMode?, item: android.view.MenuItem?): Boolean {
+                        return false
+                    }
+                    override fun onDestroyActionMode(mode: android.view.ActionMode?) {}
+                }
             }
         },
         update = { textView ->
@@ -235,6 +249,20 @@ fun SubtitleList(
                             textSize = 14f
                             maxLines = 5
                             ellipsize = TextUtils.TruncateAt.END
+
+                            // 启用 ACTION_PROCESS_TEXT 支持
+                            customSelectionActionModeCallback = object : android.view.ActionMode.Callback {
+                                override fun onCreateActionMode(mode: android.view.ActionMode?, menu: android.view.Menu?): Boolean {
+                                    return true
+                                }
+                                override fun onPrepareActionMode(mode: android.view.ActionMode?, menu: android.view.Menu?): Boolean {
+                                    return true
+                                }
+                                override fun onActionItemClicked(mode: android.view.ActionMode?, item: android.view.MenuItem?): Boolean {
+                                    return false
+                                }
+                                override fun onDestroyActionMode(mode: android.view.ActionMode?) {}
+                            }
                         }
                     },
                     update = { textView ->

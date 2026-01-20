@@ -70,4 +70,6 @@ class AudioRepository @Inject constructor(
     suspend fun insertAllIgnore(audioFiles: List<AudioFile>) = audioFileDao.insertAllIgnore(audioFiles)
     suspend fun insertScanFolder(folder: ScanFolder): Long = scanFolderDao.insert(folder)
     suspend fun deleteScanFolder(folder: ScanFolder) = scanFolderDao.delete(folder)
+
+    suspend fun clearPlayHistory(ids: List<Long>) = audioFileDao.clearPlayHistory(ids)
 }
