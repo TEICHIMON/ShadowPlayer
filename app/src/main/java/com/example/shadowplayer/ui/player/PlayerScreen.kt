@@ -1,5 +1,9 @@
 package com.example.shadowplayer.ui.player
 
+import android.graphics.Typeface
+import android.text.TextUtils
+import android.view.Gravity
+import android.widget.TextView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -7,7 +11,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -15,12 +18,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.shadowplayer.MainActivity
 import com.example.shadowplayer.player.LrcSentence
@@ -77,9 +82,11 @@ fun PlayerScreen(
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 val currentText = if (targetIndex in playerState.sentences.indices) playerState.sentences[targetIndex].text else null
                 if (currentText != null && settings.showSubtitle) {
-                    SelectionContainer {
-                        Text(text = currentText, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
-                    }
+                    // [问题1修复] 使用原生 TextView 支持欧路词典等第三方应用
+                    SelectableTextView(
+                        text = currentText,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                    )
                 } else {
                     Text(text = if (currentAudioFile == null) "请从文件库选择音频" else "无字幕", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -133,6 +140,37 @@ fun PlayerScreen(
     }
 }
 
+/**
+ * [问题1修复] 可选中的原生 TextView，支持系统级 ACTION_PROCESS_TEXT
+ * 这样欧路词典等应用可以出现在选中菜单中
+ */
+@Composable
+fun SelectableTextView(
+    text: String,
+    modifier: Modifier = Modifier
+) {
+    val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
+    val textSize = 20f
+
+    AndroidView(
+        factory = { context ->
+            TextView(context).apply {
+                setTextColor(textColor)
+                this.textSize = textSize
+                gravity = Gravity.CENTER
+                setTextIsSelectable(true)
+                maxLines = 10
+                ellipsize = TextUtils.TruncateAt.END
+            }
+        },
+        update = { textView ->
+            textView.text = text
+            textView.setTextColor(textColor)
+        },
+        modifier = modifier
+    )
+}
+
 @Composable
 fun SubtitleList(
     sentences: List<LrcSentence>,
@@ -161,14 +199,22 @@ fun SubtitleList(
         }
     }
 
+    // 获取颜色供 AndroidView 使用
+    val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
+    val highlightTextColor = MaterialTheme.colorScheme.primary.toArgb()
+    val timeColor = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
+    val highlightBgColor = MaterialTheme.colorScheme.primaryContainer
+    val normalBgColor = MaterialTheme.colorScheme.surface
+
     LazyColumn(state = listState, modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         itemsIndexed(sentences) { index, sentence ->
             val isCurrentSentence = index == currentIndex
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
-                    .background(if (isCurrentSentence) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface)
+                    .background(if (isCurrentSentence) highlightBgColor else normalBgColor)
                     .clickable { onSentenceClick(index) }
                     .padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -180,14 +226,24 @@ fun SubtitleList(
                     modifier = Modifier.width(50.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                SelectionContainer {
-                    Text(
-                        text = sentence.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = if (isCurrentSentence) FontWeight.Bold else FontWeight.Normal,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
+
+                // [问题1修复] 使用原生 TextView 替代 Compose Text，支持欧路词典
+                AndroidView(
+                    factory = { context ->
+                        TextView(context).apply {
+                            setTextIsSelectable(true)
+                            textSize = 14f
+                            maxLines = 5
+                            ellipsize = TextUtils.TruncateAt.END
+                        }
+                    },
+                    update = { textView ->
+                        textView.text = sentence.text
+                        textView.setTextColor(if (isCurrentSentence) highlightTextColor else textColor)
+                        textView.setTypeface(null, if (isCurrentSentence) Typeface.BOLD else Typeface.NORMAL)
+                    },
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
     }

@@ -38,6 +38,8 @@ class AudioRepository @Inject constructor(
     suspend fun deleteAudio(audioFile: AudioFile) = audioFileDao.delete(audioFile)
     suspend fun deleteAudioFilesByPathPrefix(pathPrefix: String) = audioFileDao.deleteByPathPrefix(pathPrefix)
     suspend fun deleteAudios(ids: List<Long>) = audioFileDao.deleteByIds(ids)
+    // [问题3新增] 按路径删除
+    suspend fun deleteAudioByPath(path: String) = audioFileDao.deleteByPath(path)
 
     // Tags
     fun getRootTags(): Flow<List<Tag>> = tagDao.getRootTags()
