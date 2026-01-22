@@ -158,14 +158,24 @@ fun SelectableTextView(
                 setTextColor(textColor)
                 this.textSize = textSize
                 gravity = Gravity.CENTER
+
+                // 保留选中功能，支持长按复制
                 setTextIsSelectable(true)
+
                 maxLines = 10
                 ellipsize = TextUtils.TruncateAt.END
+
+                // 移除了 inputType，避免变为输入框样式
             }
         },
         update = { textView ->
             textView.text = text
             textView.setTextColor(textColor)
+
+            // 加上点击监听器，虽然这里可能不一定要跳转，但保持交互一致性
+            textView.setOnClickListener {
+                // 如果需要点击跳转或其他交互，可以在这里添加回调
+            }
         },
         modifier = modifier
     )
@@ -215,6 +225,7 @@ fun SubtitleList(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
                     .background(if (isCurrentSentence) highlightBgColor else normalBgColor)
+                    // 外层点击，为了点击边缘区域能响应
                     .clickable { onSentenceClick(index) }
                     .padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -231,16 +242,26 @@ fun SubtitleList(
                 AndroidView(
                     factory = { context ->
                         TextView(context).apply {
+                            // 允许选中，支持长按复制
                             setTextIsSelectable(true)
+
                             textSize = 14f
                             maxLines = 5
                             ellipsize = TextUtils.TruncateAt.END
+
+                            // 移除了 inputType
                         }
                     },
                     update = { textView ->
                         textView.text = sentence.text
                         textView.setTextColor(if (isCurrentSentence) highlightTextColor else textColor)
                         textView.setTypeface(null, if (isCurrentSentence) Typeface.BOLD else Typeface.NORMAL)
+
+                        // 【核心修复】给内部文字设置点击监听
+                        // 因为 setTextIsSelectable(true) 会抢占点击事件，所以必须手动转发点击
+                        textView.setOnClickListener {
+                            onSentenceClick(index)
+                        }
                     },
                     modifier = Modifier.weight(1f)
                 )
