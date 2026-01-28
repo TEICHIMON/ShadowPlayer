@@ -4,8 +4,9 @@ import android.graphics.Typeface
 import android.text.TextUtils
 import android.view.Gravity
 import android.widget.TextView
-import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -33,6 +35,7 @@ import com.example.shadowplayer.player.LrcSentence
 import com.example.shadowplayer.player.PlaybackSettings
 import com.example.shadowplayer.player.LrcParser
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel()
@@ -54,111 +57,119 @@ fun PlayerScreen(
     val context = LocalContext.current
     DisposableEffect(Unit) {
         val activity = context as? MainActivity
-        activity?.onVolumeUp = { viewModel.previousSentence() }
-        activity?.onVolumeDown = { viewModel.nextSentence() }
+        activity?.onVolumeUp = {
+            if (viewModel.isVolumeKeyEnabled()) {
+                viewModel.handleVolumeUp()
+            }
+            viewModel.isVolumeKeyEnabled() // 返回是否拦截音量键
+        }
+        activity?.onVolumeDown = {
+            if (viewModel.isVolumeKeyEnabled()) {
+                viewModel.handleVolumeDown()
+            }
+            viewModel.isVolumeKeyEnabled() // 返回是否拦截音量键
+        }
         onDispose {
             activity?.onVolumeUp = null
             activity?.onVolumeDown = null
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // 1. 顶部留白或标题栏由 Activity/Scaffold 负责，这里直接开始内容
-        // 删除了原有的 Text(currentAudioFile?.title)，节省空间
-
-        // 2. 中间字幕区域 (权重最大，占据所有剩余空间)
-        Box(
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        // [修复] 标题添加滚动效果
+        Text(
+            text = currentAudioFile?.title ?: "未选择音频",
+            style = MaterialTheme.typography.titleLarge,
             modifier = Modifier
-                .weight(1f)
                 .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface)
-        ) {
-            if (settings.showSubtitle && playerState.sentences.isNotEmpty()) {
-                SubtitleList(
-                    sentences = playerState.sentences,
-                    currentIndex = targetIndex,
-                    onSentenceClick = { viewModel.seekToSentence(it) },
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    val currentText = if (targetIndex in playerState.sentences.indices) playerState.sentences[targetIndex].text else null
-                    if (currentText != null && settings.showSubtitle) {
-                        SelectableTextView(
-                            text = currentText,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp)
-                        )
-                    } else {
-                        Text(
-                            text = if (currentAudioFile == null) "请从文件库选择音频" else "无字幕",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
+                .basicMarquee(),
+            textAlign = TextAlign.Center,
+            maxLines = 1
+        )
 
-            // 跟读倒计时浮层
-            if (playerState.isInInterval) {
-                Card(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                ) {
-                    Text(
-                        text = "跟读: ${playerState.intervalCountdown}s",
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                        style = MaterialTheme.typography.labelLarge
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (settings.showSubtitle && playerState.sentences.isNotEmpty()) {
+            SubtitleList(
+                sentences = playerState.sentences,
+                currentIndex = targetIndex,
+                onSentenceClick = { viewModel.seekToSentence(it) },
+                modifier = Modifier.weight(1f).fillMaxWidth()
+            )
+        } else {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                val currentText = if (targetIndex in playerState.sentences.indices) playerState.sentences[targetIndex].text else null
+                if (currentText != null && settings.showSubtitle) {
+                    // [问题1修复] 使用原生 TextView 支持欧路词典等第三方应用
+                    SelectableTextView(
+                        text = currentText,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
                     )
+                } else {
+                    Text(text = if (currentAudioFile == null) "请从文件库选择音频" else "无字幕", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
 
-        // 3. 底部控制区域 (背景色稍微区分，视觉上更稳重)
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            // 进度条
-            ProgressSection(
-                currentPosition = displayPosition,
-                totalDuration = playerState.totalDuration,
-                onSeek = { position -> viewModel.seekTo(position); isDragging = false },
-                onPreview = { position -> isDragging = true; dragPosition = position }
-            )
-
-            // 统一控制栏：[上一首] [上一句] [播放] [下一句] [下一首]
-            UnifiedPlaybackControls(
-                isPlaying = playerState.isPlaying,
-                canPlayPreviousTrack = viewModel.canPlayPrevious(),
-                canPlayNextTrack = viewModel.canPlayNext(),
-                onPlayPause = { viewModel.togglePlayPause() },
-                onPrevSentence = { viewModel.previousSentence() },
-                onNextSentence = { viewModel.nextSentence() },
-                onPrevTrack = { viewModel.playPrevious() },
-                onNextTrack = { viewModel.playNext() }
-            )
-
-            // 紧凑设置栏：一行文字按钮
-            CompactSettingsBar(
-                settings = settings,
-                currentRepeat = playerState.currentRepeat,
-                onSpeedChange = { viewModel.setSpeed(it) },
-                onRepeatCountChange = { viewModel.setRepeatCount(it) },
-                onIntervalChange = { viewModel.setRepeatInterval(it) },
-                onToggleSubtitle = { viewModel.toggleSubtitle() }
-            )
+        if (playerState.isInInterval) {
+            Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                Text(text = "请跟读 (${playerState.intervalCountdown}秒)", modifier = Modifier.fillMaxWidth().padding(16.dp), textAlign = TextAlign.Center, style = MaterialTheme.typography.titleMedium)
+            }
         }
+
+        ProgressSection(
+            currentPosition = displayPosition,
+            totalDuration = playerState.totalDuration,
+            onSeek = { position -> viewModel.seekTo(position); isDragging = false },
+            onPreview = { position -> isDragging = true; dragPosition = position }
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // 句子控制
+        PlaybackControls(
+            isPlaying = playerState.isPlaying,
+            onPlayPause = { viewModel.togglePlayPause() },
+            onPrevious = { viewModel.previousSentence() },
+            onNext = { viewModel.nextSentence() }
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // 快进快退控制
+        SeekControls(
+            seekInterval = settings.seekInterval,
+            onSeekBackward = { viewModel.seekBackward() },
+            onSeekForward = { viewModel.seekForward() }
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // 曲目控制（上一首/下一首）
+        TrackControls(
+            canPlayPrevious = viewModel.canPlayPrevious(),
+            canPlayNext = viewModel.canPlayNext(),
+            onPreviousTrack = { viewModel.playPrevious() },
+            onNextTrack = { viewModel.playNext() },
+            currentIndex = currentPlaylistIndex,
+            totalTracks = playlist.size
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        SettingsBar(
+            settings = settings,
+            currentRepeat = playerState.currentRepeat,
+            onSpeedChange = { viewModel.setSpeed(it) },
+            onRepeatCountChange = { viewModel.setRepeatCount(it) },
+            onIntervalChange = { viewModel.setRepeatInterval(it) },
+            onToggleSubtitle = { viewModel.toggleSubtitle() }
+        )
     }
 }
 
 /**
- * 原生 TextView 封装，已移除 maxLines 限制
+ * [问题1修复] 可选中的原生 TextView，支持系统级 ACTION_PROCESS_TEXT
+ * 这样欧路词典等应用可以出现在选中菜单中
  */
 @Composable
 fun SelectableTextView(
@@ -175,8 +186,8 @@ fun SelectableTextView(
                 this.textSize = textSize
                 gravity = Gravity.CENTER
                 setTextIsSelectable(true)
-                // 移除 maxLines，允许显示全部内容
-                ellipsize = null
+                maxLines = 10
+                ellipsize = TextUtils.TruncateAt.END
             }
         },
         update = { textView ->
@@ -197,12 +208,15 @@ fun SubtitleList(
     val listState = rememberLazyListState()
     val density = LocalDensity.current
 
-    // 自动滚动逻辑
+    // [修复问题2] 让当前字幕居中显示
     LaunchedEffect(currentIndex) {
         if (currentIndex >= 0 && currentIndex < sentences.size) {
             val layoutInfo = listState.layoutInfo
             val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
-            val itemHeight = with(density) { 60.dp.toPx() }.toInt() // 估算值
+
+            // 估算每个项的高度（大约56dp）
+            val itemHeight = with(density) { 56.dp.toPx() }.toInt()
+            // 计算让当前项居中需要的偏移量
             val centerOffset = (viewportHeight / 2) - (itemHeight / 2)
 
             listState.animateScrollToItem(
@@ -212,24 +226,20 @@ fun SubtitleList(
         }
     }
 
+    // 获取颜色供 AndroidView 使用
     val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
     val highlightTextColor = MaterialTheme.colorScheme.primary.toArgb()
+    val timeColor = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
     val highlightBgColor = MaterialTheme.colorScheme.primaryContainer
     val normalBgColor = MaterialTheme.colorScheme.surface
 
-    LazyColumn(
-        state = listState,
-        modifier = modifier,
-        contentPadding = PaddingValues(vertical = 8.dp), // 增加一点垂直内边距
-        verticalArrangement = Arrangement.spacedBy(2.dp) // 减小间距，更紧凑
-    ) {
+    LazyColumn(state = listState, modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         itemsIndexed(sentences) { index, sentence ->
             val isCurrentSentence = index == currentIndex
 
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 2.dp) // 列表项两侧留白
                     .clip(RoundedCornerShape(8.dp))
                     .background(if (isCurrentSentence) highlightBgColor else normalBgColor)
                     .clickable { onSentenceClick(index) }
@@ -240,29 +250,24 @@ fun SubtitleList(
                     text = formatTime(sentence.startTime),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(45.dp) // 稍微调窄一点时间宽度
+                    modifier = Modifier.width(50.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
 
+                // [问题1修复] 使用原生 TextView 替代 Compose Text，支持欧路词典
                 AndroidView(
                     factory = { context ->
                         TextView(context).apply {
                             setTextIsSelectable(true)
-                            textSize = 15f // 稍微调大字体
-                            // 【关键修改】移除行数限制
-                            // maxLines = 5  <-- 删掉
-                            // ellipsize = TextUtils.TruncateAt.END <-- 删掉
+                            textSize = 14f
+                            maxLines = 5
+                            ellipsize = TextUtils.TruncateAt.END
                         }
                     },
                     update = { textView ->
                         textView.text = sentence.text
                         textView.setTextColor(if (isCurrentSentence) highlightTextColor else textColor)
                         textView.setTypeface(null, if (isCurrentSentence) Typeface.BOLD else Typeface.NORMAL)
-
-                        // 【点击修复】手动转发点击事件
-                        textView.setOnClickListener {
-                            onSentenceClick(index)
-                        }
                     },
                     modifier = Modifier.weight(1f)
                 )
@@ -284,16 +289,7 @@ fun ProgressSection(
         0f
     }
 
-    Column(modifier = Modifier.fillMaxWidth()) {
-        // 时间显示放在滑块上方，更紧凑
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(text = formatTime(currentPosition), style = MaterialTheme.typography.labelSmall)
-            Text(text = formatTime(totalDuration), style = MaterialTheme.typography.labelSmall)
-        }
-
+    Column {
         Slider(
             value = progress,
             onValueChange = { value ->
@@ -303,73 +299,169 @@ fun ProgressSection(
             onValueChangeFinished = {
                 onSeek(currentPosition)
             },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(32.dp) // 强制压缩 Slider 高度占用
+            modifier = Modifier.fillMaxWidth()
         )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = formatTime(currentPosition),
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = formatTime(totalDuration),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
     }
 }
 
-/**
- * 五键合一：上一首 | 上一句 | 播放 | 下一句 | 下一首
- */
 @Composable
-fun UnifiedPlaybackControls(
+fun PlaybackControls(
     isPlaying: Boolean,
-    canPlayPreviousTrack: Boolean,
-    canPlayNextTrack: Boolean,
     onPlayPause: () -> Unit,
-    onPrevSentence: () -> Unit,
-    onNextSentence: () -> Unit,
-    onPrevTrack: () -> Unit,
-    onNextTrack: () -> Unit
+    onPrevious: () -> Unit,
+    onNext: () -> Unit
 ) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 1. 上一首 (小图标)
-        IconButton(onClick = onPrevTrack, enabled = canPlayPreviousTrack) {
-            Icon(Icons.Default.SkipPrevious, contentDescription = "上一首", modifier = Modifier.size(24.dp))
+        IconButton(onClick = onPrevious) {
+            Icon(
+                imageVector = Icons.Default.SkipPrevious,
+                contentDescription = "上一句",
+                modifier = Modifier.size(36.dp)
+            )
         }
 
-        // 2. 上一句 (中图标) - 使用 ArrowBack 区分于 Track
-        IconButton(onClick = onPrevSentence) {
-            Icon(Icons.Default.ArrowBack, contentDescription = "上一句", modifier = Modifier.size(32.dp))
-        }
-
-        // 3. 播放/暂停 (大图标)
         FilledIconButton(
             onClick = onPlayPause,
-            modifier = Modifier.size(56.dp)
+            modifier = Modifier.size(64.dp)
         ) {
             Icon(
                 imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                 contentDescription = if (isPlaying) "暂停" else "播放",
-                modifier = Modifier.size(32.dp)
+                modifier = Modifier.size(36.dp)
             )
         }
 
-        // 4. 下一句 (中图标)
-        IconButton(onClick = onNextSentence) {
-            Icon(Icons.Default.ArrowForward, contentDescription = "下一句", modifier = Modifier.size(32.dp))
-        }
-
-        // 5. 下一首 (小图标)
-        IconButton(onClick = onNextTrack, enabled = canPlayNextTrack) {
-            Icon(Icons.Default.SkipNext, contentDescription = "下一首", modifier = Modifier.size(24.dp))
+        IconButton(onClick = onNext) {
+            Icon(
+                imageVector = Icons.Default.SkipNext,
+                contentDescription = "下一句",
+                modifier = Modifier.size(36.dp)
+            )
         }
     }
 }
 
 /**
- * 紧凑型设置栏：只使用文字按钮，节省空间
+ * 快进快退控制
  */
 @Composable
-fun CompactSettingsBar(
+fun SeekControls(
+    seekInterval: Long,
+    onSeekBackward: () -> Unit,
+    onSeekForward: () -> Unit
+) {
+    val intervalSeconds = (seekInterval / 1000).toInt()
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TextButton(
+            onClick = onSeekBackward,
+            modifier = Modifier.padding(horizontal = 8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Replay10,
+                contentDescription = "快退",
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("-${intervalSeconds}秒")
+        }
+
+        TextButton(
+            onClick = onSeekForward,
+            modifier = Modifier.padding(horizontal = 8.dp)
+        ) {
+            Text("+${intervalSeconds}秒")
+            Spacer(modifier = Modifier.width(4.dp))
+            Icon(
+                imageVector = Icons.Default.Forward10,
+                contentDescription = "快进",
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 曲目控制 - 上一首/下一首
+ */
+@Composable
+fun TrackControls(
+    canPlayPrevious: Boolean,
+    canPlayNext: Boolean,
+    onPreviousTrack: () -> Unit,
+    onNextTrack: () -> Unit,
+    currentIndex: Int,
+    totalTracks: Int
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 上一首按钮
+        TextButton(
+            onClick = onPreviousTrack,
+            enabled = canPlayPrevious
+        ) {
+            Icon(
+                imageVector = Icons.Default.FastRewind,
+                contentDescription = "上一首",
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("上一首")
+        }
+
+        // 显示当前位置信息
+        if (totalTracks > 0) {
+            Spacer(modifier = Modifier.width(16.dp))
+            Text(
+                text = "${currentIndex + 1} / $totalTracks",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+        }
+
+        // 下一首按钮
+        TextButton(
+            onClick = onNextTrack,
+            enabled = canPlayNext
+        ) {
+            Text("下一首")
+            Spacer(modifier = Modifier.width(4.dp))
+            Icon(
+                imageVector = Icons.Default.FastForward,
+                contentDescription = "下一首",
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun SettingsBar(
     settings: PlaybackSettings,
     currentRepeat: Int,
     onSpeedChange: (Float) -> Unit,
@@ -383,56 +475,87 @@ fun CompactSettingsBar(
 
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween, // 分散对齐
+        horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
         // 速度
         Box {
-            TextButton(onClick = { showSpeedMenu = true }, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                Text(text = "${settings.speed}x", style = MaterialTheme.typography.labelMedium)
+            TextButton(onClick = { showSpeedMenu = true }) {
+                Text("${settings.speed}x")
             }
-            DropdownMenu(expanded = showSpeedMenu, onDismissRequest = { showSpeedMenu = false }) {
+            DropdownMenu(
+                expanded = showSpeedMenu,
+                onDismissRequest = { showSpeedMenu = false }
+            ) {
                 PlaybackSettings.SPEED_OPTIONS.forEach { speed ->
-                    DropdownMenuItem(text = { Text("${speed}x") }, onClick = { onSpeedChange(speed); showSpeedMenu = false })
+                    DropdownMenuItem(
+                        text = { Text("${speed}x") },
+                        onClick = {
+                            onSpeedChange(speed)
+                            showSpeedMenu = false
+                        }
+                    )
                 }
             }
         }
 
-        // 重复
+        // 重复次数
         Box {
-            TextButton(onClick = { showRepeatMenu = true }, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                Text(text = "复读:${currentRepeat}/${settings.repeatCount}", style = MaterialTheme.typography.labelMedium)
+            TextButton(onClick = { showRepeatMenu = true }) {
+                Icon(Icons.Default.Repeat, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("${currentRepeat}/${settings.repeatCount}")
             }
-            DropdownMenu(expanded = showRepeatMenu, onDismissRequest = { showRepeatMenu = false }) {
+            DropdownMenu(
+                expanded = showRepeatMenu,
+                onDismissRequest = { showRepeatMenu = false }
+            ) {
                 PlaybackSettings.REPEAT_OPTIONS.forEach { count ->
-                    DropdownMenuItem(text = { Text("重复 $count 次") }, onClick = { onRepeatCountChange(count); showRepeatMenu = false })
+                    DropdownMenuItem(
+                        text = { Text("重复 $count 次") },
+                        onClick = {
+                            onRepeatCountChange(count)
+                            showRepeatMenu = false
+                        }
+                    )
                 }
             }
         }
 
-        // 间隔
+        // 跟读间隔
         Box {
-            TextButton(onClick = { showIntervalMenu = true }, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                Text(text = "间隔:${settings.repeatInterval / 1000}s", style = MaterialTheme.typography.labelMedium)
+            TextButton(onClick = { showIntervalMenu = true }) {
+                Icon(Icons.Default.Timer, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("${settings.repeatInterval / 1000}秒")
             }
-            DropdownMenu(expanded = showIntervalMenu, onDismissRequest = { showIntervalMenu = false }) {
+            DropdownMenu(
+                expanded = showIntervalMenu,
+                onDismissRequest = { showIntervalMenu = false }
+            ) {
                 PlaybackSettings.INTERVAL_OPTIONS.forEach { interval ->
-                    DropdownMenuItem(text = { Text("${interval / 1000}秒") }, onClick = { onIntervalChange(interval); showIntervalMenu = false })
+                    DropdownMenuItem(
+                        text = { Text("${interval / 1000}秒") },
+                        onClick = {
+                            onIntervalChange(interval)
+                            showIntervalMenu = false
+                        }
+                    )
                 }
             }
         }
 
         // 字幕开关
-        TextButton(onClick = onToggleSubtitle, contentPadding = PaddingValues(horizontal = 8.dp)) {
-            Text(
-                text = if (settings.showSubtitle) "字幕:开" else "字幕:关",
-                style = MaterialTheme.typography.labelMedium,
-                color = if (settings.showSubtitle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+        IconButton(onClick = onToggleSubtitle) {
+            Icon(
+                imageVector = if (settings.showSubtitle) Icons.Default.Subtitles else Icons.Default.SubtitlesOff,
+                contentDescription = "字幕"
             )
         }
     }
 }
 
+// 优化后的时间格式化，支持小时显示
 fun formatTime(ms: Long): String {
     val totalSeconds = ms / 1000
     val hours = totalSeconds / 3600
@@ -442,6 +565,6 @@ fun formatTime(ms: Long): String {
     return if (hours > 0) {
         "%d:%02d:%02d".format(hours, minutes, seconds)
     } else {
-        "%02d:%02d".format(minutes, seconds)
+        "%d:%02d".format(minutes, seconds)
     }
 }

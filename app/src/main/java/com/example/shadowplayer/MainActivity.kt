@@ -16,9 +16,9 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
-    // 音量键控制回调
-    var onVolumeUp: (() -> Unit)? = null
-    var onVolumeDown: (() -> Unit)? = null
+    // 音量键控制回调，返回值表示是否拦截该按键事件
+    var onVolumeUp: (() -> Boolean)? = null
+    var onVolumeDown: (() -> Boolean)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,12 +38,12 @@ class MainActivity : ComponentActivity() {
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_VOLUME_UP -> {
-                onVolumeUp?.invoke()
-                true
+                val intercepted = onVolumeUp?.invoke() ?: false
+                if (intercepted) true else super.onKeyDown(keyCode, event)
             }
             KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                onVolumeDown?.invoke()
-                true
+                val intercepted = onVolumeDown?.invoke() ?: false
+                if (intercepted) true else super.onKeyDown(keyCode, event)
             }
             else -> super.onKeyDown(keyCode, event)
         }

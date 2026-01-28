@@ -295,6 +295,27 @@ class SentencePlayer @Inject constructor(
         )
     }
 
+    /**
+     * 快进指定时间
+     */
+    fun seekForward() {
+        val interval = _settings.value.seekInterval
+        val currentPos = audioPlayer.getCurrentPosition()
+        val duration = _state.value.totalDuration
+        val newPos = minOf(currentPos + interval, duration)
+        seekTo(newPos)
+    }
+
+    /**
+     * 快退指定时间
+     */
+    fun seekBackward() {
+        val interval = _settings.value.seekInterval
+        val currentPos = audioPlayer.getCurrentPosition()
+        val newPos = maxOf(currentPos - interval, 0L)
+        seekTo(newPos)
+    }
+
     private fun saveCurrentPosition() {
         if (currentAudioId > 0) {
             val position = _state.value.currentPosition
@@ -330,13 +351,17 @@ class SentencePlayer @Inject constructor(
         val repeatInterval = prefs.getLong("repeat_interval", 2000L)
         val autoNext = prefs.getBoolean("auto_next", true)
         val showSubtitle = prefs.getBoolean("show_subtitle", true)
+        val seekInterval = prefs.getLong("seek_interval", 10000L)
+        val volumeKeyEnabled = prefs.getBoolean("volume_key_enabled", true)
 
         val savedSettings = PlaybackSettings(
             speed = speed,
             repeatCount = repeatCount,
             repeatInterval = repeatInterval,
             autoNext = autoNext,
-            showSubtitle = showSubtitle
+            showSubtitle = showSubtitle,
+            seekInterval = seekInterval,
+            volumeKeyEnabled = volumeKeyEnabled
         )
         _settings.value = savedSettings
         audioPlayer.setSpeed(speed)
@@ -349,6 +374,8 @@ class SentencePlayer @Inject constructor(
             putLong("repeat_interval", settings.repeatInterval)
             putBoolean("auto_next", settings.autoNext)
             putBoolean("show_subtitle", settings.showSubtitle)
+            putLong("seek_interval", settings.seekInterval)
+            putBoolean("volume_key_enabled", settings.volumeKeyEnabled)
         }
     }
 
@@ -378,12 +405,25 @@ class SentencePlayer @Inject constructor(
         updateSettings(newSettings)
     }
 
+    fun setSeekInterval(interval: Long) {
+        val newSettings = _settings.value.copy(seekInterval = interval)
+        updateSettings(newSettings)
+    }
+
+    fun setVolumeKeyEnabled(enabled: Boolean) {
+        val newSettings = _settings.value.copy(volumeKeyEnabled = enabled)
+        updateSettings(newSettings)
+    }
+
     private fun checkSentenceEnd(position: Long) {
         val state = _state.value
         if (state.isInInterval) return
 
-        val currentSentence = state.currentSentence ?: return
+        // [修复] 无论是否有字幕，都要更新当前播放位置
         _state.value = state.copy(currentPosition = position)
+
+        // 如果没有字幕，只更新位置，不处理句子逻辑
+        val currentSentence = state.currentSentence ?: return
 
         if (position >= currentSentence.endTime) {
             handleSentenceEnd()
