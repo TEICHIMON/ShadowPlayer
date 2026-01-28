@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -24,6 +25,7 @@ fun SettingsScreen(
     var showSpeedMenu by remember { mutableStateOf(false) }
     var showRepeatMenu by remember { mutableStateOf(false) }
     var showIntervalMenu by remember { mutableStateOf(false) }
+    var showSeekIntervalMenu by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -111,6 +113,30 @@ fun SettingsScreen(
                 }
             }
 
+            // 快进快退间隔
+            Box {
+                SettingsItem(
+                    icon = Icons.Default.FastForward,
+                    title = "快进快退间隔",
+                    subtitle = "${settings.seekInterval / 1000}秒",
+                    onClick = { showSeekIntervalMenu = true }
+                )
+                DropdownMenu(
+                    expanded = showSeekIntervalMenu,
+                    onDismissRequest = { showSeekIntervalMenu = false }
+                ) {
+                    PlaybackSettings.SEEK_INTERVAL_OPTIONS.forEach { interval ->
+                        DropdownMenuItem(
+                            text = { Text("${interval / 1000}秒") },
+                            onClick = {
+                                viewModel.setSeekInterval(interval)
+                                showSeekIntervalMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+
             // 自动播放下一句
             SettingsToggleItem(
                 icon = Icons.Default.SkipNext,
@@ -118,6 +144,19 @@ fun SettingsScreen(
                 subtitle = "播放完当前句后自动继续",
                 checked = settings.autoNext,
                 onCheckedChange = { viewModel.setAutoNext(it) }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 控制设置
+        SettingsSection(title = "控制设置") {
+            SettingsToggleItem(
+                icon = Icons.AutoMirrored.Filled.VolumeUp,
+                title = "音量键控制",
+                subtitle = "开启后：有字幕时切换句子，无字幕时快进快退",
+                checked = settings.volumeKeyEnabled,
+                onCheckedChange = { viewModel.setVolumeKeyEnabled(it) }
             )
         }
 

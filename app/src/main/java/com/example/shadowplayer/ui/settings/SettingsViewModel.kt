@@ -50,4 +50,18 @@ class SettingsViewModel @Inject constructor(
         val current = settings.value
         sentencePlayer.updateSettings(current.copy(autoNext = enabled))
     }
+
+    /**
+     * 设置快进快退间隔
+     */
+    fun setSeekInterval(interval: Long) {
+        sentencePlayer.setSeekInterval(interval)
+    }
+
+    /**
+     * 设置音量键控制开关
+     */
+    fun setVolumeKeyEnabled(enabled: Boolean) {
+        sentencePlayer.setVolumeKeyEnabled(enabled)
+    }
 }

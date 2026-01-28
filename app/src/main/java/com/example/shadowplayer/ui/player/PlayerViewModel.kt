@@ -192,6 +192,10 @@ class PlayerViewModel @Inject constructor(
     fun seekToSentence(index: Int) = sentencePlayer.seekToSentence(index)
     fun seekTo(position: Long) = sentencePlayer.seekTo(position)
 
+    // 快进快退
+    fun seekForward() = sentencePlayer.seekForward()
+    fun seekBackward() = sentencePlayer.seekBackward()
+
     // 设置
     fun setSpeed(speed: Float) = sentencePlayer.setSpeed(speed)
     fun setRepeatCount(count: Int) = sentencePlayer.setRepeatCount(count)
@@ -236,4 +240,39 @@ class PlayerViewModel @Inject constructor(
     fun setPlaylist(audioFiles: List<AudioFile>, currentIndex: Int) {
         sentencePlayer.setPlaylist(audioFiles, currentIndex)
     }
+
+    // ===== 音量键控制逻辑 =====
+
+    /**
+     * 处理音量键上（根据当前状态决定行为）
+     */
+    fun handleVolumeUp() {
+        val state = playerState.value
+        val showSubtitle = settings.value.showSubtitle
+        // 有字幕且显示字幕：上一句；否则：快退
+        if (state.hasSentences && showSubtitle) {
+            previousSentence()
+        } else {
+            seekBackward()
+        }
+    }
+
+    /**
+     * 处理音量键下（根据当前状态决定行为）
+     */
+    fun handleVolumeDown() {
+        val state = playerState.value
+        val showSubtitle = settings.value.showSubtitle
+        // 有字幕且显示字幕：下一句；否则：快进
+        if (state.hasSentences && showSubtitle) {
+            nextSentence()
+        } else {
+            seekForward()
+        }
+    }
+
+    /**
+     * 音量键控制是否启用
+     */
+    fun isVolumeKeyEnabled(): Boolean = settings.value.volumeKeyEnabled
 }
