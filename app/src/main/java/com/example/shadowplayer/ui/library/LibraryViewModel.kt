@@ -20,25 +20,21 @@ import kotlinx.coroutines.launch
 import java.net.URLDecoder
 import javax.inject.Inject
 
-// Tab枚举
 enum class LibraryTab {
     RECORDS, FAVORITES, HISTORY, TAGS, FOLDERS
 }
 
-// 文件夹显示项模型
 sealed class FileSystemItem {
     data class Folder(val name: String, val path: String, val audioCount: Int = 0) : FileSystemItem()
     data class File(val audioFile: AudioFile) : FileSystemItem()
 }
 
-// 按文件夹分组的记录
 data class FolderGroup(
     val folderName: String,
     val folderPath: String,
     val audioFiles: List<AudioFile>
 )
 
-// 音频详情数据类
 data class AudioFileDetails(
     val audioFile: AudioFile,
     val fileSizeBytes: Long,
@@ -71,12 +67,9 @@ class LibraryViewModel @Inject constructor(
 
     private val _searchQuery = MutableStateFlow("")
 
-    // 文件夹排序（全局）
     private val _folderSortType = MutableStateFlow(FolderSortType.NAME_ASC)
-
     val folderSortType: StateFlow<FolderSortType> = _folderSortType.asStateFlow()
 
-    // 文件排序（按文件夹独立记忆）
     private val _fileSortByFolder = MutableStateFlow<Map<String, FileSortType>>(emptyMap())
     val fileSortByFolder: StateFlow<Map<String, FileSortType>> = _fileSortByFolder.asStateFlow()
 
@@ -100,20 +93,29 @@ class LibraryViewModel @Inject constructor(
     private val _selectedAudioIds = MutableStateFlow<Set<Long>>(emptySet())
     val selectedAudioIds: StateFlow<Set<Long>> = _selectedAudioIds.asStateFlow()
 
-    // 音频详情对话框状态
     private val _audioDetailsState = MutableStateFlow<AudioFileDetails?>(null)
     val audioDetailsState: StateFlow<AudioFileDetails?> = _audioDetailsState.asStateFlow()
 
-    // 当前正在播放的音频ID（从SentencePlayer获取）
     val currentPlayingAudioId: StateFlow<Long> = sentencePlayer.state
         .map { sentencePlayer.getCurrentAudioId() }
         .stateIn(viewModelScope, SharingStarted.Lazily, -1L)
 
-    // [问题3] 下拉刷新状态
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
-    // ===== 核心修复：提取 Document ID =====
+    // [问题2修复] 记录Tab折叠状态管理：ViewModel 持有状态，避免重组丢失
+    private val _expandedGroupPaths = MutableStateFlow<Set<String>>(emptySet())
+    val expandedGroupPaths: StateFlow<Set<String>> = _expandedGroupPaths.asStateFlow()
+
+    fun toggleGroupExpansion(path: String) {
+        val current = _expandedGroupPaths.value
+        if (current.contains(path)) {
+            _expandedGroupPaths.value = current - path
+        } else {
+            _expandedGroupPaths.value = current + path
+        }
+    }
+
     private fun extractDocumentId(uri: String): String {
         val docMarker = "/document/"
         val docIndex = uri.indexOf(docMarker)
@@ -128,31 +130,25 @@ class LibraryViewModel @Inject constructor(
         return uri
     }
 
-    // 全部音频（用于文件夹内容计算）
     private val allAudioFiles: StateFlow<List<AudioFile>> = repository.getAllAudioFiles()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // [问题4修改] 记录页面：按直接父文件夹分组，显示该文件夹下的所有音频
     val recordGroups: StateFlow<List<FolderGroup>> = combine(
         repository.getHistory(),
         allAudioFiles,
         _searchQuery
     ) { historyFiles, allFiles, query ->
-        // 1. 找出所有有播放记录的文件的父文件夹
         val foldersWithHistory = historyFiles.map { audioFile ->
             getParentFolderPath(audioFile.path)
         }.toSet()
 
-        // 2. 对于每个这样的文件夹，获取该文件夹下的所有音频（不仅仅是播放过的）
         val groups = foldersWithHistory.mapNotNull { folderPath ->
-            // 获取该文件夹下的所有音频
             val folderAudioFiles = allFiles.filter { audioFile ->
                 getParentFolderPath(audioFile.path) == folderPath
             }
 
             if (folderAudioFiles.isEmpty()) return@mapNotNull null
 
-            // 应用搜索过滤
             val filteredFiles = if (query.isBlank()) {
                 folderAudioFiles
             } else {
@@ -161,7 +157,6 @@ class LibraryViewModel @Inject constructor(
 
             if (filteredFiles.isEmpty()) return@mapNotNull null
 
-            // 按文件名排序
             val sortedFiles = filteredFiles.sortedBy { it.title.lowercase() }
 
             FolderGroup(
@@ -171,7 +166,6 @@ class LibraryViewModel @Inject constructor(
             )
         }
 
-        // 3. 按最近播放时间排序文件夹（基于该文件夹中有播放记录的文件）
         groups.sortedByDescending { group ->
             group.audioFiles
                 .filter { it.lastPlayedAt != null }
@@ -179,7 +173,6 @@ class LibraryViewModel @Inject constructor(
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // 收藏
     val favorites: StateFlow<List<AudioFile>> = combine(
         repository.getFavorites(),
         _searchQuery
@@ -187,7 +180,6 @@ class LibraryViewModel @Inject constructor(
         if (query.isBlank()) files else files.filter { it.title.lowercase().contains(query.lowercase()) }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // 历史记录（扁平列表，用于HISTORY tab）
     val history: StateFlow<List<AudioFile>> = combine(
         repository.getHistory(),
         _searchQuery
@@ -198,14 +190,12 @@ class LibraryViewModel @Inject constructor(
     val scanFolders: StateFlow<List<ScanFolder>> = repository.getAllScanFolders()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // --- 文件夹浏览器状态 ---
     private val _currentFolderDocId = MutableStateFlow<String?>(null)
     val currentFolderPath: StateFlow<String?> = _currentFolderDocId.asStateFlow()
 
     private val _expandedFolders = MutableStateFlow<Set<String>>(emptySet())
     val expandedFolders: StateFlow<Set<String>> = _expandedFolders.asStateFlow()
 
-    // [问题2修复] 文件夹内容 - 添加搜索过滤
     val folderContent: StateFlow<List<FileSystemItem>> = combine(
         _currentFolderDocId,
         scanFolders,
@@ -224,7 +214,6 @@ class LibraryViewModel @Inject constructor(
         val fileSort = currentDocId?.let { fileSortMap[it] } ?: FileSortType.NAME_ASC
 
         if (currentDocId == null) {
-            // 根目录：显示扫描文件夹列表
             val folders = roots.map { folder ->
                 val folderDocId = extractDocumentId(folder.path)
                 val filesInFolder = allFiles.filter { file ->
@@ -243,7 +232,6 @@ class LibraryViewModel @Inject constructor(
                 if (query.isBlank()) folders else folders.filter { it.audioCount > 0 }
             }
 
-            // 应用文件夹排序
             when (folderSort) {
                 FolderSortType.NAME_ASC -> folders.sortedBy { it.name.lowercase() }
                 FolderSortType.NAME_DESC -> folders.sortedByDescending { it.name.lowercase() }
@@ -260,7 +248,6 @@ class LibraryViewModel @Inject constructor(
 
             allFiles.forEach { file ->
                 val fileDocId = extractDocumentId(file.path)
-
                 val matchedPrefix = when {
                     fileDocId.startsWith(prefixWithEncodedSep) -> prefixWithEncodedSep
                     fileDocId.startsWith(prefixWithNormalSep) -> prefixWithNormalSep
@@ -269,28 +256,26 @@ class LibraryViewModel @Inject constructor(
 
                 if (matchedPrefix != null) {
                     val remainder = fileDocId.removePrefix(matchedPrefix)
-                    if (remainder.isEmpty()) return@forEach
+                    if (remainder.isNotEmpty()) {
+                        val nextEncodedSep = remainder.indexOf("%2F")
+                        val nextNormalSep = remainder.indexOf("/")
 
-                    val nextEncodedSep = remainder.indexOf("%2F")
-                    val nextNormalSep = remainder.indexOf("/")
-
-                    if (nextEncodedSep != -1 || nextNormalSep != -1) {
-                        val separatorIndex = when {
-                            nextEncodedSep != -1 && nextNormalSep != -1 -> minOf(nextEncodedSep, nextNormalSep)
-                            nextEncodedSep != -1 -> nextEncodedSep
-                            else -> nextNormalSep
-                        }
-                        val subFolderName = remainder.substring(0, separatorIndex)
-                        val subFolderDocId = matchedPrefix + subFolderName
-
-                        subFolderFiles.getOrPut(subFolderDocId) { mutableListOf() }.add(file)
-
-                        if (!processedSubFolders.contains(subFolderDocId)) {
-                            processedSubFolders.add(subFolderDocId)
-                        }
-                    } else {
-                        if (query.isBlank() || file.title.lowercase().contains(query.lowercase())) {
-                            items.add(FileSystemItem.File(file))
+                        if (nextEncodedSep != -1 || nextNormalSep != -1) {
+                            val separatorIndex = when {
+                                nextEncodedSep != -1 && nextNormalSep != -1 -> minOf(nextEncodedSep, nextNormalSep)
+                                nextEncodedSep != -1 -> nextEncodedSep
+                                else -> nextNormalSep
+                            }
+                            val subFolderName = remainder.substring(0, separatorIndex)
+                            val subFolderDocId = matchedPrefix + subFolderName
+                            subFolderFiles.getOrPut(subFolderDocId) { mutableListOf() }.add(file)
+                            if (!processedSubFolders.contains(subFolderDocId)) {
+                                processedSubFolders.add(subFolderDocId)
+                            }
+                        } else {
+                            if (query.isBlank() || file.title.lowercase().contains(query.lowercase())) {
+                                items.add(FileSystemItem.File(file))
+                            }
                         }
                     }
                 }
@@ -315,11 +300,9 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
-            // 分离文件夹和文件
             val folders = items.filterIsInstance<FileSystemItem.Folder>()
             val files = items.filterIsInstance<FileSystemItem.File>()
 
-            // 文件夹排序（全局）
             val sortedFolders = when (folderSort) {
                 FolderSortType.NAME_ASC -> folders.sortedBy { it.name.lowercase() }
                 FolderSortType.NAME_DESC -> folders.sortedByDescending { it.name.lowercase() }
@@ -327,7 +310,6 @@ class LibraryViewModel @Inject constructor(
                 FolderSortType.AUDIO_COUNT_ASC -> folders.sortedBy { it.audioCount }
             }
 
-            // 文件排序（独立记忆）
             val sortedFiles = when (fileSort) {
                 FileSortType.NAME_ASC -> files.sortedBy { it.audioFile.title.lowercase() }
                 FileSortType.NAME_DESC -> files.sortedByDescending { it.audioFile.title.lowercase() }
@@ -362,17 +344,13 @@ class LibraryViewModel @Inject constructor(
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
     init {
-        // [问题3] 应用启动时静默扫描所有文件夹
         viewModelScope.launch {
-            // 等待 scanFolders 加载完成
             scanFolders.first { it.isNotEmpty() || true }
-            // 延迟一点启动扫描，避免影响启动性能
             kotlinx.coroutines.delay(1000)
             scanAllFoldersIncremental()
         }
     }
 
-    // --- 辅助函数 ---
     private fun getParentFolderPath(filePath: String): String {
         val docId = extractDocumentId(filePath)
         val decoded = try { URLDecoder.decode(docId, "UTF-8") } catch (e: Exception) { docId }
@@ -389,7 +367,6 @@ class LibraryViewModel @Inject constructor(
             try {
                 val uri = Uri.parse(audioFile.path)
                 var fileSize = 0L
-
                 try {
                     context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
                         fileSize = pfd.statSize
@@ -413,9 +390,7 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    fun dismissAudioDetails() {
-        _audioDetailsState.value = null
-    }
+    fun dismissAudioDetails() { _audioDetailsState.value = null }
 
     private fun formatFileSize(bytes: Long): String {
         return when {
@@ -431,31 +406,21 @@ class LibraryViewModel @Inject constructor(
         val hours = totalSeconds / 3600
         val minutes = (totalSeconds % 3600) / 60
         val seconds = totalSeconds % 60
-        return if (hours > 0) {
-            "%d:%02d:%02d".format(hours, minutes, seconds)
-        } else {
-            "%d:%02d".format(minutes, seconds)
-        }
+        return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
     }
 
     fun search(query: String) { _searchQuery.value = query }
 
-    // --- 文件夹导航 ---
-    fun navigateToFolder(docId: String) {
-        _currentFolderDocId.value = docId
-    }
+    fun navigateToFolder(docId: String) { _currentFolderDocId.value = docId }
 
     fun navigateUp() {
         val currentDocId = _currentFolderDocId.value ?: return
-
         val isRoot = scanFolders.value.any { extractDocumentId(it.path) == currentDocId }
-
         if (isRoot) {
             _currentFolderDocId.value = null
         } else {
             val lastEncodedSep = currentDocId.lastIndexOf("%2F")
             val lastNormalSep = currentDocId.lastIndexOf("/")
-
             val parentDocId = when {
                 lastEncodedSep > lastNormalSep -> currentDocId.substring(0, lastEncodedSep)
                 lastNormalSep != -1 -> currentDocId.substring(0, lastNormalSep)
@@ -467,14 +432,9 @@ class LibraryViewModel @Inject constructor(
 
     fun toggleFolderExpanded(path: String) {
         val current = _expandedFolders.value
-        _expandedFolders.value = if (current.contains(path)) {
-            current - path
-        } else {
-            current + path
-        }
+        _expandedFolders.value = if (current.contains(path)) current - path else current + path
     }
 
-    // --- 批量操作 ---
     fun enterSelectionMode(initialId: Long) {
         _isSelectionMode.value = true
         _selectedAudioIds.value = setOf(initialId)
@@ -495,9 +455,7 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    fun selectAll(files: List<AudioFile>) {
-        _selectedAudioIds.value = files.map { it.id }.toSet()
-    }
+    fun selectAll(files: List<AudioFile>) { _selectedAudioIds.value = files.map { it.id }.toSet() }
 
     fun deleteSelected() {
         viewModelScope.launch {
@@ -519,13 +477,11 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    // --- 扫描逻辑 ---
     fun addScanFolder(uri: Uri) {
         viewModelScope.launch {
             val docFile = DocumentFile.fromTreeUri(context, uri)
             val name = docFile?.name ?: "Unknown"
             val path = uri.toString()
-
             val folder = ScanFolder(path = path, name = name)
             repository.insertScanFolder(folder)
             scanFolderIncremental(folder)
@@ -540,9 +496,18 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * [问题3] 下拉刷新
-     */
+    // [问题3修复] 通过 UI 层的 FileSystemItem.Folder (只包含 docId) 删除 ScanFolder
+    fun removeScanFolderByItem(folderItem: FileSystemItem.Folder) {
+        viewModelScope.launch {
+            val scanFolder = scanFolders.value.find {
+                extractDocumentId(it.path) == folderItem.path
+            }
+            if (scanFolder != null) {
+                removeScanFolder(scanFolder)
+            }
+        }
+    }
+
     fun refreshFolders() {
         viewModelScope.launch {
             _isRefreshing.value = true
@@ -554,19 +519,12 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * [问题3修复] 增量扫描单个文件夹
-     * - 新文件 → 插入
-     * - 已删除文件 → 从数据库移除
-     */
     fun scanFolderIncremental(folder: ScanFolder) {
         viewModelScope.launch(Dispatchers.IO) {
             _isScanning.value = true
             try {
                 val uri = Uri.parse(folder.path)
                 val docFile = DocumentFile.fromTreeUri(context, uri)
-
-                // 获取数据库中该文件夹下的所有文件路径
                 val folderDocId = extractDocumentId(folder.path)
                 val existingPaths = repository.getAllPaths().filter { path ->
                     val fileDocId = extractDocumentId(path)
@@ -574,28 +532,12 @@ class LibraryViewModel @Inject constructor(
                             fileDocId.startsWith("$folderDocId/") ||
                             fileDocId == folderDocId
                 }.toHashSet()
-
                 val foundPaths = mutableSetOf<String>()
                 val newAudioFiles = mutableListOf<AudioFile>()
-
-                // 扫描实际文件
                 docFile?.let { scanDirectoryIncremental(it, newAudioFiles, existingPaths, foundPaths) }
-
-                // 插入新文件
-                if (newAudioFiles.isNotEmpty()) {
-                    repository.insertAllIgnore(newAudioFiles)
-                    Log.d("LibraryViewModel", "Added ${newAudioFiles.size} new files")
-                }
-
-                // [问题3修复] 删除数据库中存在但实际已被删除的文件
+                if (newAudioFiles.isNotEmpty()) repository.insertAllIgnore(newAudioFiles)
                 val deletedPaths = existingPaths - foundPaths
-                if (deletedPaths.isNotEmpty()) {
-                    deletedPaths.forEach { path ->
-                        repository.deleteAudioByPath(path)
-                    }
-                    Log.d("LibraryViewModel", "Removed ${deletedPaths.size} deleted files")
-                }
-
+                deletedPaths.forEach { repository.deleteAudioByPath(it) }
             } catch (e: Exception) {
                 Log.e("LibraryViewModel", "Incremental scan failed", e)
             } finally {
@@ -604,27 +546,12 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    @Deprecated("Use scanFolderIncremental instead")
-    fun scanFolder(folder: ScanFolder) {
-        scanFolderIncremental(folder)
-    }
-
-    /**
-     * [问题3修复] 增量扫描所有文件夹
-     */
     fun scanAllFoldersIncremental() {
-        viewModelScope.launch {
-            scanFolders.value.forEach { scanFolderIncremental(it) }
-        }
+        viewModelScope.launch { scanFolders.value.forEach { scanFolderIncremental(it) } }
     }
 
-    fun scanAllFolders() {
-        scanAllFoldersIncremental()
-    }
+    fun scanAllFolders() { scanAllFoldersIncremental() }
 
-    /**
-     * [问题3修复] 增量扫描目录
-     */
     private fun scanDirectoryIncremental(
         directory: DocumentFile,
         newFiles: MutableList<AudioFile>,
@@ -637,11 +564,8 @@ class LibraryViewModel @Inject constructor(
             } else {
                 val fileName = file.name ?: ""
                 val filePath = file.uri.toString()
-
                 if (isAudioFile(fileName)) {
                     foundPaths.add(filePath)
-
-                    // 只有不存在的文件才添加
                     if (!existingPaths.contains(filePath)) {
                         createAudioFile(file, filePath)?.let { newFiles.add(it) }
                     }
@@ -664,7 +588,6 @@ class LibraryViewModel @Inject constructor(
             retriever.release()
             d?.toLongOrNull() ?: 0
         } catch (e: Exception) { 0L }
-
         val lrcPath = findLrcFile(file)
         return AudioFile(path = filePath, title = name.substringBeforeLast("."), duration = duration, lrcPath = lrcPath)
     }
@@ -682,7 +605,6 @@ class LibraryViewModel @Inject constructor(
         return null
     }
 
-    // --- 标签与单项操作 ---
     fun selectTag(tagId: Long?) { _selectedTagId.value = tagId }
     fun createTag(name: String, parentId: Long?) { viewModelScope.launch { repository.insertTag(Tag(name = name, parentId = parentId)) } }
     fun updateTag(tag: Tag) { viewModelScope.launch { repository.updateTag(tag) } }
@@ -691,27 +613,16 @@ class LibraryViewModel @Inject constructor(
     fun toggleFavorite(audioFile: AudioFile) { viewModelScope.launch { repository.updateFavorite(audioFile.id, !audioFile.isFavorite) } }
     fun deleteAudio(audioFile: AudioFile) { viewModelScope.launch { repository.deleteAudio(audioFile) } }
 
-    // ===== [问题3] 获取父文件夹下的所有音频用于播放列表 =====
-    /**
-     * 获取指定音频文件所在父文件夹下的所有音频（按文件名排序）
-     * @return Pair<播放列表, 当前音频在列表中的索引>
-     */
     fun getPlaylistForAudio(audioFile: AudioFile): Pair<List<AudioFile>, Int> {
         val parentPath = getParentFolderPath(audioFile.path)
         val allFiles = allAudioFiles.value
-
-        // 获取同一父文件夹下的所有音频
         val playlist = allFiles
             .filter { getParentFolderPath(it.path) == parentPath }
             .sortedBy { it.title.lowercase() }
-
         val currentIndex = playlist.indexOfFirst { it.id == audioFile.id }
         return Pair(playlist, currentIndex)
     }
 
-    /**
-     * 设置播放列表到 SentencePlayer
-     */
     fun setPlaylistForAudio(audioFile: AudioFile) {
         val (playlist, index) = getPlaylistForAudio(audioFile)
         sentencePlayer.setPlaylist(playlist, index)

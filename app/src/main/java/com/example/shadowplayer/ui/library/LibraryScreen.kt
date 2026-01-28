@@ -18,6 +18,9 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Label
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -54,6 +57,9 @@ fun LibraryScreen(
     val folderContent by viewModel.folderContent.collectAsState()
     val currentFolderPath by viewModel.currentFolderPath.collectAsState()
     val expandedFolders by viewModel.expandedFolders.collectAsState()
+
+    // [问题2修复] 订阅折叠状态
+    val expandedGroupPaths by viewModel.expandedGroupPaths.collectAsState()
 
     val isScanning by viewModel.isScanning.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
@@ -130,7 +136,7 @@ fun LibraryScreen(
                                 Icon(Icons.Default.SelectAll, contentDescription = "全选")
                             }
                             IconButton(onClick = { showBatchAddTagDialog = true }) {
-                                Icon(Icons.Default.Label, contentDescription = "添加标签")
+                                Icon(Icons.AutoMirrored.Filled.Label, contentDescription = "添加标签")
                             }
                             IconButton(onClick = { viewModel.deleteSelected() }) {
                                 Icon(Icons.Default.Delete, contentDescription = "删除")
@@ -176,8 +182,10 @@ fun LibraryScreen(
                         RecordsGroupedSection(
                             groups = recordGroups,
                             currentPlayingAudioId = currentPlayingAudioId,
+                            expandedGroupPaths = expandedGroupPaths, // 传入状态
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
+                            onToggleGroup = { viewModel.toggleGroupExpansion(it) }, // 传入回调
                             onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else handleFileSelected(it) },
                             onFileLongClick = { viewModel.showAudioDetails(it) },
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
@@ -247,10 +255,8 @@ fun LibraryScreen(
                             onFavoriteClick = { viewModel.toggleFavorite(it) },
                             onAddTagClick = { showAddToTagDialog = it },
                             onAddScanFolder = { folderPickerLauncher.launch(null) },
-                            onRemoveScanFolder = { folder ->
-                                val scanFolder = scanFolders.find { it.path == folder.path }
-                                scanFolder?.let { viewModel.removeScanFolder(it) }
-                            },
+                            // [问题3修复] 使用 removeScanFolderByItem
+                            onRemoveScanFolder = { folder -> viewModel.removeScanFolderByItem(folder) },
                             onScanAll = { viewModel.scanAllFolders() },
                             onFolderSortChange = { viewModel.setFolderSortType(it) },
                             onFileSortChange = { sortType ->
@@ -262,7 +268,7 @@ fun LibraryScreen(
             }
         }
     }
-
+    // ... 对话框代码保持不变 ...
     if (showAddTagDialog) {
         AddTagDialog(
             availableParents = allTags,
@@ -273,7 +279,6 @@ fun LibraryScreen(
             }
         )
     }
-
     showAddToTagDialog?.let { audioFile ->
         AddToTagDialog(
             audioFile = audioFile,
@@ -285,7 +290,6 @@ fun LibraryScreen(
             }
         )
     }
-
     if (showBatchAddTagDialog) {
         AddToTagDialog(
             audioFile = AudioFile(0, "", "", 0),
@@ -297,7 +301,6 @@ fun LibraryScreen(
             }
         )
     }
-
     audioDetails?.let { details ->
         AudioDetailsDialog(
             details = details,
@@ -306,6 +309,7 @@ fun LibraryScreen(
     }
 }
 
+// ... AudioDetailsDialog 等辅助组件保持不变 ...
 @Composable
 fun AudioDetailsDialog(
     details: AudioFileDetails,
@@ -386,8 +390,10 @@ private fun formatTimestamp(timestamp: Long): String {
 fun RecordsGroupedSection(
     groups: List<FolderGroup>,
     currentPlayingAudioId: Long,
+    expandedGroupPaths: Set<String>, // 新增参数
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
+    onToggleGroup: (String) -> Unit, // 新增回调
     onFileClick: (AudioFile) -> Unit,
     onFileLongClick: (AudioFile) -> Unit,
     onFavoriteClick: (AudioFile) -> Unit,
@@ -419,6 +425,8 @@ fun RecordsGroupedSection(
             items(groups, key = { it.folderPath }) { group ->
                 FolderGroupCard(
                     group = group,
+                    isExpanded = expandedGroupPaths.contains(group.folderPath), // 传递状态
+                    onToggleExpand = { onToggleGroup(group.folderPath) }, // 传递回调
                     currentPlayingAudioId = currentPlayingAudioId,
                     isSelectionMode = isSelectionMode,
                     selectedIds = selectedIds,
@@ -436,6 +444,8 @@ fun RecordsGroupedSection(
 @Composable
 fun FolderGroupCard(
     group: FolderGroup,
+    isExpanded: Boolean, // 修改
+    onToggleExpand: () -> Unit, // 修改
     currentPlayingAudioId: Long,
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
@@ -445,7 +455,7 @@ fun FolderGroupCard(
     onAddTagClick: (AudioFile) -> Unit,
     onDeleteGroup: () -> Unit
 ) {
-    var expanded by remember { mutableStateOf(false) }
+    // 移除本地状态 var expanded by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
@@ -456,7 +466,7 @@ fun FolderGroupCard(
     ) {
         Column {
             Surface(
-                onClick = { expanded = !expanded },
+                onClick = onToggleExpand, // 使用外部回调
                 color = if (containsPlaying)
                     MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
                 else
@@ -516,14 +526,14 @@ fun FolderGroupCard(
                     }
 
                     Icon(
-                        if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = if (expanded) "收起" else "展开"
+                        if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (isExpanded) "收起" else "展开"
                     )
                 }
             }
 
             AnimatedVisibility(
-                visible = expanded,
+                visible = isExpanded, // 使用外部状态
                 enter = expandVertically(),
                 exit = shrinkVertically()
             ) {
@@ -635,13 +645,14 @@ fun CompactAudioFileItem(
         }
 
         Column(modifier = Modifier.weight(1f)) {
+            // [问题2修复] 添加跑马灯效果
             Text(
                 text = audioFile.title,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Normal,
                 color = if (isCurrentlyPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                modifier = Modifier.basicMarquee()
             )
             Row {
                 if (audioFile.lrcPath != null) {
@@ -678,6 +689,8 @@ fun CompactAudioFileItem(
     }
 }
 
+// ... FoldersExplorerSection, FolderListItem 等其他组件保持不变 (除了上面的 onRemoveScanFolder 调用点已修改) ...
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FoldersExplorerSection(
@@ -699,7 +712,7 @@ fun FoldersExplorerSection(
     onFavoriteClick: (AudioFile) -> Unit,
     onAddTagClick: (AudioFile) -> Unit,
     onAddScanFolder: () -> Unit,
-    onRemoveScanFolder: (FileSystemItem.Folder) -> Unit,
+    onRemoveScanFolder: (FileSystemItem.Folder) -> Unit, // 注意这里的类型
     onScanAll: () -> Unit,
     onFolderSortChange: (FolderSortType) -> Unit,
     onFileSortChange: (FileSortType) -> Unit
@@ -733,7 +746,7 @@ fun FoldersExplorerSection(
                     // 文件夹排序按钮
                     Box {
                         OutlinedButton(onClick = { showFolderSortMenu = true }) {
-                            Icon(Icons.Default.Sort, null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.AutoMirrored.Filled.Sort, null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("排序", maxLines = 1)
                         }
@@ -778,7 +791,7 @@ fun FoldersExplorerSection(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                Icons.Default.ArrowBack,
+                                Icons.AutoMirrored.Filled.ArrowBack,
                                 null,
                                 tint = MaterialTheme.colorScheme.primary
                             )
@@ -791,10 +804,9 @@ fun FoldersExplorerSection(
                         }
                     }
 
-                    // [修复3] 在子文件夹视图中添加“文件夹排序”按钮
                     Box {
                         IconButton(onClick = { showFolderSortMenu = true }) {
-                            Icon(Icons.Default.Folder, null) // 使用不同图标区分文件夹排序
+                            Icon(Icons.Default.Folder, null)
                         }
                         DropdownMenu(
                             expanded = showFolderSortMenu,
@@ -823,10 +835,9 @@ fun FoldersExplorerSection(
                         }
                     }
 
-                    // 文件排序按钮（文件夹内）
                     Box(modifier = Modifier.padding(end = 8.dp)) {
                         IconButton(onClick = { showFileSortMenu = true }) {
-                            Icon(Icons.Default.Sort, "排序")
+                            Icon(Icons.AutoMirrored.Filled.Sort, "排序")
                         }
                         DropdownMenu(
                             expanded = showFileSortMenu,
@@ -888,7 +899,7 @@ fun FoldersExplorerSection(
                                     isRoot = currentPath == null,
                                     onNavigate = onNavigate,
                                     onRemove = if (currentPath == null) {
-                                        { onRemoveScanFolder(item) }
+                                        { onRemoveScanFolder(item) } // [关键修复] 调用 ViewModel 新增的方法
                                     } else null
                                 )
                             }
@@ -912,7 +923,7 @@ fun FoldersExplorerSection(
         }
     }
 }
-
+// ... 剩余部分如 FolderListItem, TagManagementScreen 等保持不变 ...
 @Composable
 fun FolderListItem(
     folder: FileSystemItem.Folder,
@@ -960,6 +971,8 @@ fun FolderListItem(
     )
 }
 
+// ... TagManagementScreen, buildTagTree, AudioFileList, AudioFileItem, TagsSection, AddTagDialog ... 保持不变
+// 由于篇幅限制且这些部分无需修改，此处省略，请在实际文件中保留原有的这些函数
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TagManagementScreen(
@@ -980,7 +993,7 @@ fun TagManagementScreen(
             TopAppBar(
                 title = { Text("标签管理") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "返回") }
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") }
                 },
             )
         },
@@ -1000,7 +1013,7 @@ fun TagManagementScreen(
                     ListItem(
                         modifier = Modifier.padding(start = (depth * 24).dp),
                         headlineContent = { Text(tag.name) },
-                        leadingContent = { Icon(if (depth == 0) Icons.Default.Label else Icons.Default.SubdirectoryArrowRight, null, tint = MaterialTheme.colorScheme.primary) },
+                        leadingContent = { Icon(if (depth == 0) Icons.AutoMirrored.Filled.Label else Icons.Default.SubdirectoryArrowRight, null, tint = MaterialTheme.colorScheme.primary) },
                         trailingContent = {
                             Row {
                                 IconButton(onClick = { tagToEdit = tag }) { Icon(Icons.Default.Edit, "重命名") }
@@ -1271,7 +1284,8 @@ fun AddToTagDialog(audioFile: AudioFile, tags: List<Tag>, onDismiss: () -> Unit,
                 LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
                     val tree = buildTagTree(tags)
                     items(tree) { (tag, depth) ->
-                        ListItem(modifier = Modifier.clickable { onTagSelected(tag) }.padding(start = (depth * 24).dp), headlineContent = { Text(tag.name) }, leadingContent = { Icon(Icons.Default.Label, null) })
+                        ListItem(modifier = Modifier.clickable { onTagSelected(tag) }.padding(start = (depth * 24).dp), headlineContent = { Text(tag.name) }, leadingContent = { Icon(
+                            Icons.AutoMirrored.Filled.Label, null) })
                     }
                 }
             }
