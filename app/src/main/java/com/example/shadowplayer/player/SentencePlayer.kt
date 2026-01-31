@@ -504,7 +504,10 @@ class SentencePlayer @Inject constructor(
                 delay(1000)
             }
             if (isActive) {
-                _state.value = _state.value.copy(isInInterval = false, intervalCountdown = 0)
+                // 修复：不要在这里立即设置 isInInterval = false，
+                // 而是让 repeatCurrentSentence 内部更新状态时再设置。
+                // 避免在 repeatCurrentSentence 执行前被 checkSentenceEnd 误判。
+                _state.value = _state.value.copy(intervalCountdown = 0)
                 repeatCurrentSentence()
             }
         }
@@ -526,7 +529,9 @@ class SentencePlayer @Inject constructor(
                 delay(1000)
             }
             if (isActive) {
-                _state.value = _state.value.copy(isInInterval = false, intervalCountdown = 0, currentRepeat = 1)
+                // 修复：不要在这里立即设置 isInInterval = false，
+                // 保持 isInInterval = true 直到 moveToNextSentenceSmooth 内部完成切换。
+                _state.value = _state.value.copy(intervalCountdown = 0, currentRepeat = 1)
                 moveToNextSentenceSmooth()
             }
         }
@@ -551,15 +556,18 @@ class SentencePlayer @Inject constructor(
         val distanceToNextStart = currentPosition - nextSentence.startTime
         if (distanceToNextStart >= 0 && distanceToNextStart < SEEK_TOLERANCE_MS) {
             // 已经在下一句的起点附近，不需要 seek，只更新状态
+            // 修复：在这里显式设置 isInInterval = false，因为 startIntervalForNext 不再提前设置它
             _state.value = state.copy(
                 currentIndex = nextIndex,
                 currentRepeat = 1,
-                currentPosition = currentPosition
+                currentPosition = currentPosition,
+                isInInterval = false
             )
             audioPlayer.play()
             startPositionUpdate()
         } else {
             // 需要 seek
+            // nextSentence 内部会调用 seekToSentence，那里会设置 isInInterval = false
             nextSentence()
             play()
         }
@@ -568,6 +576,7 @@ class SentencePlayer @Inject constructor(
     private fun repeatCurrentSentence() {
         val state = _state.value
         val sentence = state.currentSentence ?: return
+        // 在这里统一设置 isInInterval = false，确保与状态更新原子化
         _state.value = state.copy(currentRepeat = state.currentRepeat + 1, isInInterval = false)
         audioPlayer.seekTo(sentence.startTime)
         audioPlayer.play()
