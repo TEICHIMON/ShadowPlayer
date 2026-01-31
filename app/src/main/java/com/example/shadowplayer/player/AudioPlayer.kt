@@ -33,6 +33,7 @@ class AudioPlayer @Inject constructor(
     private val _duration = MutableStateFlow(0L)
     val duration: StateFlow<Long> = _duration.asStateFlow()
 
+    // 供 SentencePlayer 监听位置变化
     var onPositionChanged: ((Long) -> Unit)? = null
     var onPlaybackEnded: (() -> Unit)? = null
 
@@ -40,24 +41,22 @@ class AudioPlayer @Inject constructor(
         return exoPlayer ?: ExoPlayer.Builder(context).build().also { player ->
             exoPlayer = player
             player.addListener(object : Player.Listener {
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY) {
+                        // 修复 00:00 问题：准备好后立即更新时长
+                        _duration.value = player.duration
+                    } else if (playbackState == Player.STATE_ENDED) {
+                        onPlaybackEnded?.invoke()
+                    }
+                    _isPlaying.value = player.isPlaying
+                }
+
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     _isPlaying.value = isPlaying
                 }
 
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (playbackState == Player.STATE_ENDED) {
-                        onPlaybackEnded?.invoke()
-                    }
-                    if (playbackState == Player.STATE_READY) {
-                        // 修复：确保 duration 为正数
-                        val realDuration = if (player.duration > 0) player.duration else 0L
-                        _duration.value = realDuration
-                        Log.d(TAG, "Duration updated: $realDuration")
-                    }
-                }
-
                 override fun onPlayerError(error: PlaybackException) {
-                    Log.e(TAG, "Player error: ${error.message}", error)
+                    Log.e(TAG, "Player error: ${error.message}")
                 }
             })
         }
@@ -65,20 +64,12 @@ class AudioPlayer @Inject constructor(
 
     fun loadAudio(path: String) {
         try {
-            // 重置时长，避免上一首的时长残留
-            _duration.value = 0L
             val player = getOrCreatePlayer()
-            val uri = Uri.parse(path)
-
-            // [修复] 加载新音频时先停止播放，确保状态同步
-            player.playWhenReady = false
-            _isPlaying.value = false
-
-            val mediaItem = MediaItem.fromUri(uri)
+            val mediaItem = MediaItem.fromUri(Uri.parse(path))
             player.setMediaItem(mediaItem)
             player.prepare()
         } catch (e: Exception) {
-            Log.e(TAG, "Error loading audio", e)
+            Log.e(TAG, "Error loading audio: ${e.message}")
         }
     }
 
@@ -93,28 +84,32 @@ class AudioPlayer @Inject constructor(
     fun seekTo(position: Long) {
         exoPlayer?.seekTo(position)
         _currentPosition.value = position
+        onPositionChanged?.invoke(position)
     }
 
     fun setSpeed(speed: Float) {
         exoPlayer?.setPlaybackSpeed(speed)
     }
 
-    fun getCurrentPosition(): Long {
-        return exoPlayer?.currentPosition ?: 0
+    fun getDuration(): Long {
+        return exoPlayer?.duration ?: 0L
     }
 
-    fun getDuration(): Long {
-        return if ((exoPlayer?.duration ?: 0) > 0) exoPlayer!!.duration else 0
+    fun getCurrentPosition(): Long {
+        return exoPlayer?.currentPosition ?: 0L
     }
 
     fun updatePosition() {
-        val position = getCurrentPosition()
-        _currentPosition.value = position
-        onPositionChanged?.invoke(position)
+        exoPlayer?.let { player ->
+            val current = player.currentPosition
+            _currentPosition.value = current
+            onPositionChanged?.invoke(current)
+        }
     }
 
     fun release() {
         exoPlayer?.release()
         exoPlayer = null
+        _isPlaying.value = false
     }
 }
