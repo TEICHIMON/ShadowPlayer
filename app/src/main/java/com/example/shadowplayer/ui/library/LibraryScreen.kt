@@ -14,6 +14,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -76,6 +77,10 @@ fun LibraryScreen(
     var showAddToTagDialog by remember { mutableStateOf<AudioFile?>(null) }
     var showBatchAddTagDialog by remember { mutableStateOf(false) }
     var showTagManager by remember { mutableStateOf(false) }
+
+    // [问题1修复] 记录每个文件夹路径的滚动状态
+    // Key: 文件夹路径 (root 用 "root" 表示), Value: LazyListState
+    val folderScrollStates = remember { mutableStateMapOf<String, LazyListState>() }
 
     val folderSortType by viewModel.folderSortType.collectAsState()
     val fileSortType = viewModel.getFileSortType(currentFolderPath)
@@ -236,9 +241,14 @@ fun LibraryScreen(
                         )
                     }
                     LibraryTab.FOLDERS -> {
+                        // [问题1修复] 获取当前路径对应的 LazyListState，如果不存在则创建
+                        val currentPathKey = currentFolderPath ?: "root"
+                        val listState = folderScrollStates.getOrPut(currentPathKey) { LazyListState() }
+
                         FoldersExplorerSection(
                             currentPath = currentFolderPath,
                             items = folderContent,
+                            lazyListState = listState, // 传入状态
                             currentPlayingAudioId = currentPlayingAudioId,
                             expandedFolders = expandedFolders,
                             isSelectionMode = isSelectionMode,
@@ -689,13 +699,14 @@ fun CompactAudioFileItem(
     }
 }
 
-// ... FoldersExplorerSection, FolderListItem 等其他组件保持不变 (除了上面的 onRemoveScanFolder 调用点已修改) ...
+// ... FoldersExplorerSection, FolderListItem 等其他组件 ...
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FoldersExplorerSection(
     currentPath: String?,
     items: List<FileSystemItem>,
+    lazyListState: LazyListState, // [问题1修复] 新增参数接收 ListState
     currentPlayingAudioId: Long,
     expandedFolders: Set<String>,
     isSelectionMode: Boolean,
@@ -889,6 +900,7 @@ fun FoldersExplorerSection(
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
+                    state = lazyListState, // [问题1修复] 应用传入的 ListState
                     contentPadding = PaddingValues(bottom = 16.dp)
                 ) {
                     items(items) { item ->

@@ -65,6 +65,10 @@ class AudioPlayer @Inject constructor(
     fun loadAudio(path: String) {
         try {
             val player = getOrCreatePlayer()
+            // [问题2修复] 加载新音频时，先关闭自动播放标志。
+            // 这样 prepare() 完成后会处于 PAUSED 状态，等待业务逻辑显式调用 play()。
+            player.playWhenReady = false
+
             val mediaItem = MediaItem.fromUri(Uri.parse(path))
             player.setMediaItem(mediaItem)
             player.prepare()
