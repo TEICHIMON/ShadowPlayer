@@ -22,6 +22,8 @@ class SentencePlayer @Inject constructor(
         private const val KEY_LAST_PLAYED_AUDIO_ID = "last_played_audio_id"
         private const val POSITION_SAVE_INTERVAL_MS = 10000L
         private const val SEEK_TOLERANCE_MS = 150L
+        // [问题4修复] 增加跳转前导时间，提供呼吸感
+        private const val SEEK_PRE_ROLL_MS = 200L
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -144,7 +146,10 @@ class SentencePlayer @Inject constructor(
 
         audioPlayer.loadAudio(audioPath)
 
-        val initialDuration = audioPlayer.getDuration()
+        // [问题2修复] 获取 duration 时进行负数检查，避免 UI 显示异常
+        var initialDuration = audioPlayer.getDuration()
+        if (initialDuration < 0) initialDuration = 0L
+
         val sentences = if (lrcContent != null) {
             parseSubtitle(lrcContent, pendingSubtitleType ?: "lrc", initialDuration)
         } else {
@@ -230,7 +235,10 @@ class SentencePlayer @Inject constructor(
             isInInterval = false
         )
 
-        audioPlayer.seekTo(sentence.startTime)
+        // [问题4修复] 跳转时向前偏移一点点，并处理 0 的边界
+        val seekTarget = maxOf(0L, sentence.startTime - SEEK_PRE_ROLL_MS)
+        audioPlayer.seekTo(seekTarget)
+
         // [重要修复] seek 完成后恢复标志位
         isSeeking = false
 
@@ -524,7 +532,11 @@ class SentencePlayer @Inject constructor(
         // [重要修复] 使用 isSeeking 保护
         isSeeking = true
         _state.value = state.copy(currentRepeat = state.currentRepeat + 1, isInInterval = false)
-        audioPlayer.seekTo(sentence.startTime)
+
+        // [问题4修复] 跳转时向前偏移一点点，并处理 0 的边界
+        val seekTarget = maxOf(0L, sentence.startTime - SEEK_PRE_ROLL_MS)
+        audioPlayer.seekTo(seekTarget)
+
         isSeeking = false
 
         audioPlayer.play()

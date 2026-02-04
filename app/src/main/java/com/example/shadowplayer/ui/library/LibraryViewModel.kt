@@ -73,6 +73,17 @@ class LibraryViewModel @Inject constructor(
     private val _fileSortByFolder = MutableStateFlow<Map<String, FileSortType>>(emptyMap())
     val fileSortByFolder: StateFlow<Map<String, FileSortType>> = _fileSortByFolder.asStateFlow()
 
+    // [问题3修复] 用于保存文件夹滚动位置的 Map (path -> index to offset)
+    private val _folderScrollPositions = mutableMapOf<String?, Pair<Int, Int>>()
+
+    fun saveScrollPosition(path: String?, index: Int, offset: Int) {
+        _folderScrollPositions[path] = index to offset
+    }
+
+    fun getScrollPosition(path: String?): Pair<Int, Int> {
+        return _folderScrollPositions[path] ?: (0 to 0)
+    }
+
     fun setFolderSortType(sortType: FolderSortType) {
         _folderSortType.value = sortType
     }

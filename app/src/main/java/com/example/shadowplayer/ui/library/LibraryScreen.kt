@@ -14,10 +14,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Label
@@ -77,10 +77,6 @@ fun LibraryScreen(
     var showAddToTagDialog by remember { mutableStateOf<AudioFile?>(null) }
     var showBatchAddTagDialog by remember { mutableStateOf(false) }
     var showTagManager by remember { mutableStateOf(false) }
-
-    // [问题1修复] 记录每个文件夹路径的滚动状态
-    // Key: 文件夹路径 (root 用 "root" 表示), Value: LazyListState
-    val folderScrollStates = remember { mutableStateMapOf<String, LazyListState>() }
 
     val folderSortType by viewModel.folderSortType.collectAsState()
     val fileSortType = viewModel.getFileSortType(currentFolderPath)
@@ -241,14 +237,10 @@ fun LibraryScreen(
                         )
                     }
                     LibraryTab.FOLDERS -> {
-                        // [问题1修复] 获取当前路径对应的 LazyListState，如果不存在则创建
-                        val currentPathKey = currentFolderPath ?: "root"
-                        val listState = folderScrollStates.getOrPut(currentPathKey) { LazyListState() }
-
                         FoldersExplorerSection(
+                            viewModel = viewModel, // [问题3修复] 传入 ViewModel 方便存取状态
                             currentPath = currentFolderPath,
                             items = folderContent,
-                            lazyListState = listState, // 传入状态
                             currentPlayingAudioId = currentPlayingAudioId,
                             expandedFolders = expandedFolders,
                             isSelectionMode = isSelectionMode,
@@ -699,14 +691,14 @@ fun CompactAudioFileItem(
     }
 }
 
-// ... FoldersExplorerSection, FolderListItem 等其他组件 ...
+// ... FoldersExplorerSection, FolderListItem 等其他组件保持不变 (除了上面的 onRemoveScanFolder 调用点已修改) ...
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FoldersExplorerSection(
+    viewModel: LibraryViewModel, // [问题3修复] 传入 ViewModel
     currentPath: String?,
     items: List<FileSystemItem>,
-    lazyListState: LazyListState, // [问题1修复] 新增参数接收 ListState
     currentPlayingAudioId: Long,
     expandedFolders: Set<String>,
     isSelectionMode: Boolean,
@@ -731,6 +723,45 @@ fun FoldersExplorerSection(
     val pullToRefreshState = rememberPullToRefreshState()
     var showFolderSortMenu by remember { mutableStateOf(false) }
     var showFileSortMenu by remember { mutableStateOf(false) }
+
+    // [问题3修复] 列表状态记忆
+    val listState = rememberLazyListState()
+
+    // 当路径变更时，恢复已保存的滚动位置
+    LaunchedEffect(currentPath) {
+        val (index, offset) = viewModel.getScrollPosition(currentPath)
+        listState.scrollToItem(index, offset)
+    }
+
+    // 在退出组件时保存当前位置（例如切换 Tab）
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.saveScrollPosition(
+                currentPath,
+                listState.firstVisibleItemIndex,
+                listState.firstVisibleItemScrollOffset
+            )
+        }
+    }
+
+    // 封装导航函数，在跳转前保存当前位置
+    val handleNavigate: (String) -> Unit = { path ->
+        viewModel.saveScrollPosition(
+            currentPath,
+            listState.firstVisibleItemIndex,
+            listState.firstVisibleItemScrollOffset
+        )
+        onNavigate(path)
+    }
+
+    val handleNavigateUp: () -> Unit = {
+        viewModel.saveScrollPosition(
+            currentPath,
+            listState.firstVisibleItemIndex,
+            listState.firstVisibleItemScrollOffset
+        )
+        onNavigateUp()
+    }
 
     PullToRefreshBox(
         isRefreshing = isRefreshing,
@@ -793,7 +824,7 @@ fun FoldersExplorerSection(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Surface(
-                        onClick = onNavigateUp,
+                        onClick = handleNavigateUp, // [修复] 使用带保存逻辑的导航
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                         modifier = Modifier.weight(1f)
                     ) {
@@ -899,8 +930,8 @@ fun FoldersExplorerSection(
                 }
             } else {
                 LazyColumn(
+                    state = listState, // [修复] 绑定状态
                     modifier = Modifier.fillMaxSize(),
-                    state = lazyListState, // [问题1修复] 应用传入的 ListState
                     contentPadding = PaddingValues(bottom = 16.dp)
                 ) {
                     items(items) { item ->
@@ -909,7 +940,7 @@ fun FoldersExplorerSection(
                                 FolderListItem(
                                     folder = item,
                                     isRoot = currentPath == null,
-                                    onNavigate = onNavigate,
+                                    onNavigate = handleNavigate, // [修复] 使用带保存逻辑的导航
                                     onRemove = if (currentPath == null) {
                                         { onRemoveScanFolder(item) } // [关键修复] 调用 ViewModel 新增的方法
                                     } else null
