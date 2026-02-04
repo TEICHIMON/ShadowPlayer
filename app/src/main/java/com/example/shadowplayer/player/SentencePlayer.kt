@@ -146,9 +146,10 @@ class SentencePlayer @Inject constructor(
 
         audioPlayer.loadAudio(audioPath)
 
-        // [问题2修复] 获取 duration 时进行负数检查，避免 UI 显示异常
-        var initialDuration = audioPlayer.getDuration()
-        if (initialDuration < 0) initialDuration = 0L
+        // [修复] 不再调用 getDuration()，使用 0 作为初始值
+        // 正确的 duration 会通过 audioPlayer.duration Flow 异步更新
+        // updateSentencesWithDuration() 会在收到正确值后重新解析字幕
+        val initialDuration = 0L
 
         val sentences = if (lrcContent != null) {
             parseSubtitle(lrcContent, pendingSubtitleType ?: "lrc", initialDuration)
