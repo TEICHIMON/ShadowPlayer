@@ -257,8 +257,7 @@ fun SubtitleList(
                         TextView(context).apply {
                             setTextIsSelectable(true)
                             textSize = 14f
-                            maxLines = 5
-                            ellipsize = TextUtils.TruncateAt.END
+                            // [问题1修复] 移除了 maxLines 和 ellipsize 限制，确保长字幕能完整显示
                         }
                     },
                     update = { textView ->
@@ -474,7 +473,9 @@ fun SettingsBar(
     }
 }
 
-fun formatTime(ms: Long): String {
+fun formatTime(msInput: Long): String {
+    // [问题2修复] 增加对负数时间的保护，防止显示 12:-55 这种错误格式
+    val ms = if (msInput < 0) 0L else msInput
     val totalSeconds = ms / 1000
     val hours = totalSeconds / 3600
     val minutes = (totalSeconds % 3600) / 60
