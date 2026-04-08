@@ -9,7 +9,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -647,14 +646,13 @@ fun CompactAudioFileItem(
         }
 
         Column(modifier = Modifier.weight(1f)) {
-            // [问题2修复] 添加跑马灯效果
+            // 标题完整换行显示，便于一眼找到目标音频
             Text(
                 text = audioFile.title,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Normal,
                 color = if (isCurrentlyPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                modifier = Modifier.basicMarquee()
+                modifier = Modifier.fillMaxWidth()
             )
             Row {
                 if (audioFile.lrcPath != null) {
@@ -1191,8 +1189,7 @@ fun AudioFileItem(
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Normal,
                     color = if (isCurrentlyPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    modifier = Modifier.basicMarquee()
+                    modifier = Modifier.fillMaxWidth()
                 )
                 Row {
                     if (audioFile.lrcPath != null) { Text("有字幕", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)) }
