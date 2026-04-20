@@ -24,6 +24,8 @@ class SentencePlayer @Inject constructor(
         private const val SEEK_TOLERANCE_MS = 150L
         // [问题4修复] 增加跳转前导时间，提供呼吸感
         private const val SEEK_PRE_ROLL_MS = 200L
+        // [新增] 用户主动 seek 后的意图保护窗口，防止轮询把 index 回拉到上一句
+        private const val USER_INTENT_PROTECTION_MS = 500L
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -54,11 +56,20 @@ class SentencePlayer @Inject constructor(
     // [关键修复] 增加 seeking 标志位，防止 seekTo 触发的回调导致逻辑重入或死循环
     private var isSeeking = false
 
+    // [新增] 用户意图保护：记录最近一次用户主动 seek 的目标 index 和时间戳
+    private var userIntendedIndex: Int = -1
+    private var userIntendTimestamp: Long = 0L
+
     init {
         loadSettings()
 
         audioPlayer.onPositionChanged = { position ->
             checkSentenceEnd(position)
+        }
+
+        // [新增] seek 真正完成时才清除 isSeeking 标志
+        audioPlayer.onSeekCompleted = {
+            isSeeking = false
         }
 
         scope.launch {
@@ -227,8 +238,12 @@ class SentencePlayer @Inject constructor(
         cancelInterval()
         val sentence = sentences[index]
 
-        // [重要修复] 设置 isSeeking = true，阻止回调逻辑运行
+        // [修复] 标记 seeking，等 onSeekCompleted 回调清除（不再立即复位）
         isSeeking = true
+        // [新增] 记录用户意图
+        userIntendedIndex = index
+        userIntendTimestamp = System.currentTimeMillis()
+
         _state.value = _state.value.copy(
             currentIndex = index,
             currentRepeat = 1,
@@ -236,12 +251,10 @@ class SentencePlayer @Inject constructor(
             isInInterval = false
         )
 
-        // [问题4修复] 跳转时向前偏移一点点，并处理 0 的边界
         val seekTarget = maxOf(0L, sentence.startTime - SEEK_PRE_ROLL_MS)
         audioPlayer.seekTo(seekTarget)
 
-        // [重要修复] seek 完成后恢复标志位
-        isSeeking = false
+        // [删除] 原来的 isSeeking = false 这行去掉
 
         saveCurrentPosition()
         if (_state.value.isPlaying) play()
@@ -258,22 +271,28 @@ class SentencePlayer @Inject constructor(
     fun seekTo(position: Long) {
         val newIndex = LrcParser.findSentenceIndex(_state.value.sentences, position)
 
-        // [重要修复] 使用 isSeeking 保护
+        // [修复] 延长 isSeeking 生命周期
         isSeeking = true
+        // [新增] 记录用户意图
+        if (newIndex >= 0) {
+            userIntendedIndex = newIndex
+            userIntendTimestamp = System.currentTimeMillis()
+        }
+
         _state.value = _state.value.copy(
             currentPosition = position,
             currentIndex = newIndex,
             currentRepeat = 1
         )
         audioPlayer.seekTo(position)
-        isSeeking = false
+        // [删除] 原来的 isSeeking = false 去掉
     }
 
     // 内部使用的安全 seek 方法
     private fun safeSeekTo(position: Long) {
         isSeeking = true
         audioPlayer.seekTo(position)
-        isSeeking = false
+        // [删除] 原来的 isSeeking = false 去掉
     }
 
     fun seekForward() {
@@ -530,15 +549,18 @@ class SentencePlayer @Inject constructor(
         val state = _state.value
         val sentence = state.currentSentence ?: return
 
-        // [重要修复] 使用 isSeeking 保护
+        // [修复] 延长 isSeeking 生命周期
         isSeeking = true
+        // [新增] 重复播放也是明确意图，保护当前 index 不被回拉
+        userIntendedIndex = state.currentIndex
+        userIntendTimestamp = System.currentTimeMillis()
+
         _state.value = state.copy(currentRepeat = state.currentRepeat + 1, isInInterval = false)
 
-        // [问题4修复] 跳转时向前偏移一点点，并处理 0 的边界
         val seekTarget = maxOf(0L, sentence.startTime - SEEK_PRE_ROLL_MS)
         audioPlayer.seekTo(seekTarget)
 
-        isSeeking = false
+        // [删除] 原来的 isSeeking = false 去掉
 
         audioPlayer.play()
         startPositionUpdate()
@@ -567,12 +589,30 @@ class SentencePlayer @Inject constructor(
         val state = _state.value
         if (state.sentences.isEmpty()) return
 
+        // [守卫1] seek 尚未真正完成，忽略过渡态位置读数
+        if (isSeeking) return
+
         val currentPosition = audioPlayer.getCurrentPosition()
         val newIndex = LrcParser.findSentenceIndex(state.sentences, currentPosition)
 
-        if (newIndex != state.currentIndex && newIndex >= 0) {
-            _state.value = state.copy(currentIndex = newIndex)
+        if (newIndex < 0) return
+        if (newIndex == state.currentIndex) return
+
+        // [守卫2] 用户意图保护窗口：不允许把 index 回拉到用户意图之前
+        val now = System.currentTimeMillis()
+        val inProtectionWindow = userIntendedIndex >= 0 &&
+                now - userIntendTimestamp < USER_INTENT_PROTECTION_MS
+        if (inProtectionWindow && newIndex < userIntendedIndex) {
+            return  // 保持用户选中的句子，不回退
         }
+
+        // 意图达成（位置已推进到目标或之后）或窗口已过期，清除意图
+        if (userIntendedIndex >= 0 &&
+            (newIndex >= userIntendedIndex || !inProtectionWindow)) {
+            userIntendedIndex = -1
+        }
+
+        _state.value = state.copy(currentIndex = newIndex)
     }
 
     private fun stopPositionUpdate() {

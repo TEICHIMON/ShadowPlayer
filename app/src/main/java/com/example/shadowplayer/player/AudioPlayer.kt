@@ -36,6 +36,8 @@ class AudioPlayer @Inject constructor(
     // 供 SentencePlayer 监听位置变化
     var onPositionChanged: ((Long) -> Unit)? = null
     var onPlaybackEnded: (() -> Unit)? = null
+    // [新增] seek 真正完成的回调，用于精准清除 isSeeking 标志
+    var onSeekCompleted: (() -> Unit)? = null
 
     private fun getOrCreatePlayer(): ExoPlayer {
         return exoPlayer ?: ExoPlayer.Builder(context).build().also { player ->
@@ -57,6 +59,19 @@ class AudioPlayer @Inject constructor(
 
                 override fun onPlayerError(error: PlaybackException) {
                     Log.e(TAG, "Player error: ${error.message}")
+                }
+
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int
+                ) {
+                    // 仅关心 SEEK 相关的不连续事件
+                    if (reason == Player.DISCONTINUITY_REASON_SEEK ||
+                        reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) {
+                        _currentPosition.value = newPosition.positionMs
+                        onSeekCompleted?.invoke()
+                    }
                 }
             })
         }
