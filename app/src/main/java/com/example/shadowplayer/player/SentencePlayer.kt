@@ -451,10 +451,17 @@ class SentencePlayer @Inject constructor(
     private fun handleContinuousPlayback() {
         val state = _state.value
         val currentPosition = audioPlayer.getCurrentPosition()
-
         val newIndex = LrcParser.findSentenceIndex(state.sentences, currentPosition)
 
         if (newIndex != state.currentIndex && newIndex >= 0 && newIndex < state.sentences.size) {
+            // [新增] 和 updateCurrentIndexByPosition 同样的意图保护
+            val now = System.currentTimeMillis()
+            val inProtectionWindow = userIntendedIndex >= 0 &&
+                    now - userIntendTimestamp < USER_INTENT_PROTECTION_MS
+            if (inProtectionWindow && newIndex != userIntendedIndex) {
+                return  // 用户刚表达过意图,忽略这次回弹
+            }
+
             _state.value = state.copy(
                 currentIndex = newIndex,
                 currentRepeat = 1
