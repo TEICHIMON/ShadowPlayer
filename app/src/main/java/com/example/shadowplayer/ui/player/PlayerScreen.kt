@@ -23,15 +23,20 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.shadowplayer.MainActivity
+import com.example.shadowplayer.player.AudioOutputRoute
+import com.example.shadowplayer.player.AudioOutputType
 import com.example.shadowplayer.player.LrcParser
 import com.example.shadowplayer.player.LrcSentence
 import com.example.shadowplayer.player.PlaybackSettings
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -43,6 +48,7 @@ fun PlayerScreen(
     val currentAudioFile by viewModel.currentAudioFile.collectAsState()
     val playlist by viewModel.playlist.collectAsState()
     val currentPlaylistIndex by viewModel.currentPlaylistIndex.collectAsState()
+    val audioOutputRoute by viewModel.audioOutputRoute.collectAsState()
 
     var isDragging by remember { mutableStateOf(false) }
     var dragPosition by remember { mutableLongStateOf(0L) }
@@ -53,6 +59,19 @@ fun PlayerScreen(
     } else playerState.currentIndex
 
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START || event == Lifecycle.Event.ON_RESUME) {
+                viewModel.syncPlaybackState()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     DisposableEffect(Unit) {
         val activity = context as? MainActivity
         activity?.onVolumeUp = {
@@ -83,6 +102,13 @@ fun PlayerScreen(
                 .basicMarquee(),
             textAlign = TextAlign.Center,
             maxLines = 1
+        )
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        AudioOutputBar(
+            route = audioOutputRoute,
+            onClick = { viewModel.showOutputSwitcher(context) }
         )
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -141,6 +167,11 @@ fun PlayerScreen(
                 onPreview = { position -> isDragging = true; dragPosition = position }
             )
 
+            VolumeSlider(
+                volume = settings.volume,
+                onVolumeChange = { viewModel.setVolume(it) }
+            )
+
             // 主要播放控制 (上一句, 播放/暂停, 下一句)
             PlaybackControls(
                 isPlaying = playerState.isPlaying,
@@ -169,7 +200,48 @@ fun PlayerScreen(
                 onSpeedChange = { viewModel.setSpeed(it) },
                 onRepeatCountChange = { viewModel.setRepeatCount(it) },
                 onIntervalChange = { viewModel.setRepeatInterval(it) },
+                onSleepTimerChange = { viewModel.setSleepTimerMinutes(it) },
                 onToggleSubtitle = { viewModel.toggleSubtitle() }
+            )
+        }
+    }
+}
+
+@Composable
+private fun AudioOutputBar(
+    route: AudioOutputRoute,
+    onClick: () -> Unit
+) {
+    val icon = when (route.type) {
+        AudioOutputType.BLUETOOTH -> Icons.Default.BluetoothAudio
+        AudioOutputType.WIRED -> Icons.Default.Headphones
+        AudioOutputType.SPEAKER -> Icons.Default.PhoneAndroid
+        AudioOutputType.OTHER -> Icons.Default.VolumeUp
+    }
+
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = "音频输出：${route.name}",
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1
+            )
+            Spacer(Modifier.width(4.dp))
+            Icon(
+                Icons.Default.ArrowDropDown,
+                contentDescription = "切换音频输出",
+                modifier = Modifier.size(18.dp)
             )
         }
     }
@@ -273,14 +345,60 @@ fun SubtitleList(
 }
 
 @Composable
+fun VolumeSlider(
+    volume: Float,
+    onVolumeChange: (Float) -> Unit
+) {
+    val currentVolume = volume.coerceIn(0f, 1f)
+    val volumePercent = (currentVolume * 100).roundToInt()
+    val icon = when {
+        currentVolume <= 0f -> Icons.Default.VolumeOff
+        currentVolume < 0.5f -> Icons.Default.VolumeDown
+        else -> Icons.Default.VolumeUp
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = "音量",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(22.dp)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Slider(
+            value = currentVolume,
+            onValueChange = { onVolumeChange(it.coerceIn(0f, 1f)) },
+            valueRange = 0f..1f,
+            modifier = Modifier.weight(1f).height(28.dp)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = "$volumePercent%",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.End,
+            modifier = Modifier.width(42.dp)
+        )
+    }
+}
+
+@Composable
 fun ProgressSection(
     currentPosition: Long,
     totalDuration: Long,
     onSeek: (Long) -> Unit,
     onPreview: (Long) -> Unit
 ) {
+    var pendingSeekPosition by remember { mutableLongStateOf(currentPosition) }
+    LaunchedEffect(currentPosition, totalDuration) {
+        pendingSeekPosition = currentPosition.coerceIn(0L, totalDuration.coerceAtLeast(0L))
+    }
+
     val progress = if (totalDuration > 0) {
-        currentPosition.toFloat() / totalDuration
+        (pendingSeekPosition.toFloat() / totalDuration).coerceIn(0f, 1f)
     } else {
         0f
     }
@@ -290,10 +408,12 @@ fun ProgressSection(
             value = progress,
             onValueChange = { value ->
                 val previewTime = (value * totalDuration).toLong()
+                    .coerceIn(0L, totalDuration.coerceAtLeast(0L))
+                pendingSeekPosition = previewTime
                 onPreview(previewTime)
             },
             onValueChangeFinished = {
-                onSeek(currentPosition)
+                onSeek(pendingSeekPosition)
             },
             modifier = Modifier.fillMaxWidth().height(20.dp) // 减小 Slider 占用高度
         )
@@ -402,11 +522,13 @@ fun SettingsBar(
     onSpeedChange: (Float) -> Unit,
     onRepeatCountChange: (Int) -> Unit,
     onIntervalChange: (Long) -> Unit,
+    onSleepTimerChange: (Int) -> Unit,
     onToggleSubtitle: () -> Unit
 ) {
     var showSpeedMenu by remember { mutableStateOf(false) }
     var showRepeatMenu by remember { mutableStateOf(false) }
     var showIntervalMenu by remember { mutableStateOf(false) }
+    var showSleepTimerMenu by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -457,6 +579,26 @@ fun SettingsBar(
                     DropdownMenuItem(
                         text = { Text("${interval / 1000}秒") },
                         onClick = { onIntervalChange(interval); showIntervalMenu = false }
+                    )
+                }
+            }
+        }
+
+        // 睡眠定时
+        Box {
+            TextButton(onClick = { showSleepTimerMenu = true }) {
+                Icon(Icons.Default.Timer, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    PlaybackSettings.sleepTimerLabel(settings.sleepTimerMinutes),
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+            DropdownMenu(expanded = showSleepTimerMenu, onDismissRequest = { showSleepTimerMenu = false }) {
+                PlaybackSettings.SLEEP_TIMER_OPTIONS.forEach { minutes ->
+                    DropdownMenuItem(
+                        text = { Text(PlaybackSettings.sleepTimerLabel(minutes)) },
+                        onClick = { onSleepTimerChange(minutes); showSleepTimerMenu = false }
                     )
                 }
             }
