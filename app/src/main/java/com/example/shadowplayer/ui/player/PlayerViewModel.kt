@@ -2,12 +2,13 @@ package com.example.shadowplayer.ui.player
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.shadowplayer.data.entity.AudioFile
 import com.example.shadowplayer.data.repository.AudioRepository
+import com.example.shadowplayer.player.AudioOutputRoute
+import com.example.shadowplayer.player.AudioRouteManager
 import com.example.shadowplayer.player.PlaybackSettings
 import com.example.shadowplayer.player.SentencePlayer
 import com.example.shadowplayer.player.SentencePlayerState
@@ -15,11 +16,9 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
@@ -31,6 +30,7 @@ import javax.inject.Inject
 class PlayerViewModel @Inject constructor(
     private val sentencePlayer: SentencePlayer,
     private val repository: AudioRepository,
+    private val audioRouteManager: AudioRouteManager,
     @ApplicationContext private val context: Context,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
@@ -44,8 +44,10 @@ class PlayerViewModel @Inject constructor(
     // 播放列表状态
     val playlist: StateFlow<List<AudioFile>> = sentencePlayer.playlist
     val currentPlaylistIndex: StateFlow<Int> = sentencePlayer.currentPlaylistIndex
+    val audioOutputRoute: StateFlow<AudioOutputRoute> = audioRouteManager.currentRoute
 
     init {
+        syncPlaybackState()
         val audioId = savedStateHandle.get<Long>("audioId") ?: -1L
         if (audioId > 0) {
             // 从列表点击进来，带有 audioId
@@ -54,6 +56,7 @@ class PlayerViewModel @Inject constructor(
                 viewModelScope.launch {
                     val audioFile = repository.getAudioById(audioId)
                     _currentAudioFile.value = audioFile
+                    sentencePlayer.syncFromPlayer()
                     // 确保播放列表已设置
                     if (audioFile != null && sentencePlayer.playlist.value.isEmpty()) {
                         setupPlaylistForAudio(audioFile)
@@ -77,6 +80,7 @@ class PlayerViewModel @Inject constructor(
             viewModelScope.launch {
                 val audioFile = repository.getAudioById(currentPlayingId)
                 _currentAudioFile.value = audioFile
+                sentencePlayer.syncFromPlayer()
                 // 如果播放列表为空，重新构建
                 if (audioFile != null && sentencePlayer.playlist.value.isEmpty()) {
                     setupPlaylistForAudio(audioFile)
@@ -165,6 +169,7 @@ class PlayerViewModel @Inject constructor(
 
             sentencePlayer.load(
                 audioPath = audioFile.path,
+                title = audioFile.title,
                 lrcContent = lrcContent,
                 subtitlePath = audioFile.lrcPath,
                 audioId = audioFile.id,
@@ -198,8 +203,10 @@ class PlayerViewModel @Inject constructor(
 
     // 设置
     fun setSpeed(speed: Float) = sentencePlayer.setSpeed(speed)
+    fun setVolume(volume: Float) = sentencePlayer.setVolume(volume)
     fun setRepeatCount(count: Int) = sentencePlayer.setRepeatCount(count)
     fun setRepeatInterval(interval: Long) = sentencePlayer.setRepeatInterval(interval)
+    fun setSleepTimerMinutes(minutes: Int) = sentencePlayer.setSleepTimerMinutes(minutes)
     fun toggleSubtitle() = sentencePlayer.toggleSubtitle()
     fun setAutoNext(enabled: Boolean) {
         val current = settings.value
@@ -275,4 +282,11 @@ class PlayerViewModel @Inject constructor(
      * 音量键控制是否启用
      */
     fun isVolumeKeyEnabled(): Boolean = settings.value.volumeKeyEnabled
+
+    fun syncPlaybackState() {
+        sentencePlayer.syncFromPlayer()
+        audioRouteManager.refreshRoute()
+    }
+
+    fun showOutputSwitcher(context: Context) = audioRouteManager.showOutputSwitcher(context)
 }

@@ -20,7 +20,9 @@ class SentencePlayer @Inject constructor(
 ) {
     companion object {
         private const val KEY_LAST_PLAYED_AUDIO_ID = "last_played_audio_id"
+        private const val KEY_SLEEP_TIMER_MINUTES = "sleep_timer_minutes"
         private const val POSITION_SAVE_INTERVAL_MS = 10000L
+        private const val SLEEP_TIMER_MINUTE_MS = 60_000L
         private const val SEEK_TOLERANCE_MS = 150L
         // [问题4修复] 增加跳转前导时间，提供呼吸感
         private const val SEEK_PRE_ROLL_MS = 200L
@@ -46,6 +48,7 @@ class SentencePlayer @Inject constructor(
     private var positionUpdateJob: Job? = null
     private var intervalJob: Job? = null
     private var positionSaveJob: Job? = null
+    private var sleepTimerJob: Job? = null
 
     // 暂存 LRC 内容
     private var pendingLrcContent: String? = null
@@ -70,6 +73,28 @@ class SentencePlayer @Inject constructor(
         // [新增] seek 真正完成时才清除 isSeeking 标志
         audioPlayer.onSeekCompleted = {
             isSeeking = false
+        }
+
+        audioPlayer.onExternalPause = {
+            handleExternalPause()
+        }
+
+        audioPlayer.onPlaybackEnded = {
+            handleExternalPause()
+        }
+
+        scope.launch {
+            audioPlayer.isPlaying.collectLatest { isAudioPlaying ->
+                val current = _state.value
+                _state.value = current.copy(
+                    isAudioPlaying = isAudioPlaying,
+                    isPlaying = current.isPlaying || isAudioPlaying
+                )
+                if (isAudioPlaying) {
+                    startPositionUpdate()
+                    startPeriodicPositionSave()
+                }
+            }
         }
 
         scope.launch {
@@ -98,7 +123,60 @@ class SentencePlayer @Inject constructor(
     }
 
     fun isCurrentlyPlaying(): Boolean {
-        return _state.value.isPlaying
+        return _state.value.isSessionActive
+    }
+
+    fun isPlaybackActive(): Boolean {
+        val snapshot = audioPlayer.getSnapshot()
+        return _state.value.isSessionActive || snapshot.isPlaybackRequested
+    }
+
+    fun hasLoadedMedia(): Boolean = audioPlayer.hasMedia()
+
+    fun syncFromPlayer() {
+        val snapshot = audioPlayer.getSnapshot()
+        if (!snapshot.hasMedia) {
+            stopPositionUpdate()
+            stopPeriodicPositionSave()
+            _state.value = _state.value.copy(
+                isPlaying = false,
+                isAudioPlaying = false,
+                isInInterval = false,
+                intervalCountdown = 0
+            )
+            return
+        }
+
+        val state = _state.value
+        val position = snapshot.currentPosition
+        val duration = if (snapshot.duration > 0) snapshot.duration else state.totalDuration
+        val newIndex = if (!isSeeking && state.sentences.isNotEmpty()) {
+            LrcParser.findSentenceIndex(state.sentences, position)
+                .takeIf { it >= 0 && it < state.sentences.size }
+                ?: state.currentIndex
+        } else {
+            state.currentIndex
+        }
+        val sessionActive = snapshot.isPlaybackRequested || state.isInInterval
+
+        _state.value = state.copy(
+            currentPosition = position,
+            totalDuration = duration,
+            currentIndex = newIndex,
+            isPlaying = sessionActive,
+            isAudioPlaying = snapshot.isPlaying
+        )
+
+        when {
+            snapshot.isPlaybackRequested -> {
+                startPositionUpdate()
+                startPeriodicPositionSave()
+            }
+            !state.isInInterval -> {
+                stopPositionUpdate()
+                stopPeriodicPositionSave()
+            }
+        }
     }
 
     private fun isContinuousPlaybackMode(): Boolean {
@@ -138,6 +216,7 @@ class SentencePlayer @Inject constructor(
 
     fun load(
         audioPath: String,
+        title: String,
         lrcContent: String?,
         subtitlePath: String? = null,
         audioId: Long = -1L,
@@ -155,7 +234,7 @@ class SentencePlayer @Inject constructor(
             updatePlaylistIndex(audioId)
         }
 
-        audioPlayer.loadAudio(audioPath)
+        audioPlayer.loadAudio(audioPath, audioId, title)
 
         // [修复] 不再调用 getDuration()，使用 0 作为初始值
         // 正确的 duration 会通过 audioPlayer.duration Flow 异步更新
@@ -214,20 +293,45 @@ class SentencePlayer @Inject constructor(
     }
 
     fun play() {
+        if (!audioPlayer.hasMedia()) return
         cancelInterval()
         audioPlayer.setSpeed(_settings.value.speed)
         audioPlayer.play()
-        _state.value = _state.value.copy(isPlaying = true, isInInterval = false)
+        _state.value = _state.value.copy(
+            isPlaying = true,
+            isAudioPlaying = audioPlayer.getSnapshot().isPlaying,
+            isInInterval = false
+        )
         startPositionUpdate()
         startPeriodicPositionSave()
     }
 
     fun pause() {
+        settlePausedState()
         audioPlayer.pause()
-        _state.value = _state.value.copy(isPlaying = false)
+    }
+
+    /**
+     * Called when ExoPlayer pauses because audio focus was lost or a headset was disconnected.
+     * This updates logical sentence playback without issuing another player command.
+     */
+    fun handleExternalPause() {
+        settlePausedState()
+    }
+
+    private fun settlePausedState() {
+        val currentPosition = audioPlayer.getCurrentPosition()
         stopPositionUpdate()
         stopPeriodicPositionSave()
-        cancelInterval()
+        intervalJob?.cancel()
+        intervalJob = null
+        _state.value = _state.value.copy(
+            isPlaying = false,
+            isAudioPlaying = false,
+            isInInterval = false,
+            intervalCountdown = 0,
+            currentPosition = currentPosition
+        )
         saveCurrentPosition()
     }
 
@@ -266,6 +370,14 @@ class SentencePlayer @Inject constructor(
 
     fun nextSentence() {
         seekToSentence(minOf(_state.value.sentences.size - 1, _state.value.currentIndex + 1))
+    }
+
+    fun previousSentenceOrSeek() {
+        if (_state.value.hasSentences) previousSentence() else seekBackward()
+    }
+
+    fun nextSentenceOrSeek() {
+        if (_state.value.hasSentences) nextSentence() else seekForward()
     }
 
     fun seekTo(position: Long) {
@@ -346,41 +458,61 @@ class SentencePlayer @Inject constructor(
         val autoNext = prefs.getBoolean("auto_next", true)
         val showSubtitle = prefs.getBoolean("show_subtitle", true)
         val seekInterval = prefs.getLong("seek_interval", 10000L)
-        val volumeKeyEnabled = prefs.getBoolean("volume_key_enabled", true)
+        val volumeKeyEnabled = prefs.getBoolean("volume_key_enabled", false)
+        val volume = prefs.getFloat("volume", 1.0f).coerceIn(0f, 1f)
+        val savedSleepTimerMinutes = prefs.getInt(KEY_SLEEP_TIMER_MINUTES, 0)
+        if (savedSleepTimerMinutes != 0) {
+            prefs.edit { putInt(KEY_SLEEP_TIMER_MINUTES, 0) }
+        }
 
         val savedSettings = PlaybackSettings(
             speed = speed,
+            volume = volume,
             repeatCount = repeatCount,
             repeatInterval = repeatInterval,
             autoNext = autoNext,
             showSubtitle = showSubtitle,
+            sleepTimerMinutes = 0,
             seekInterval = seekInterval,
             volumeKeyEnabled = volumeKeyEnabled
         )
         _settings.value = savedSettings
         audioPlayer.setSpeed(speed)
+        audioPlayer.setVolume(volume)
     }
 
     private fun saveSettings(settings: PlaybackSettings) {
         prefs.edit {
             putFloat("speed", settings.speed)
+            putFloat("volume", settings.volume)
             putInt("repeat_count", settings.repeatCount)
             putLong("repeat_interval", settings.repeatInterval)
             putBoolean("auto_next", settings.autoNext)
             putBoolean("show_subtitle", settings.showSubtitle)
+            putInt(KEY_SLEEP_TIMER_MINUTES, settings.sleepTimerMinutes)
             putLong("seek_interval", settings.seekInterval)
             putBoolean("volume_key_enabled", settings.volumeKeyEnabled)
         }
     }
 
     fun updateSettings(settings: PlaybackSettings) {
-        _settings.value = settings
-        audioPlayer.setSpeed(settings.speed)
-        saveSettings(settings)
+        val boundedSettings = settings.copy(
+            volume = settings.volume.coerceIn(0f, 1f),
+            sleepTimerMinutes = PlaybackSettings.normalizeSleepTimerMinutes(settings.sleepTimerMinutes)
+        )
+        _settings.value = boundedSettings
+        audioPlayer.setSpeed(boundedSettings.speed)
+        audioPlayer.setVolume(boundedSettings.volume)
+        saveSettings(boundedSettings)
     }
 
     fun setSpeed(speed: Float) {
         val newSettings = _settings.value.copy(speed = speed)
+        updateSettings(newSettings)
+    }
+
+    fun setVolume(volume: Float) {
+        val newSettings = _settings.value.copy(volume = volume.coerceIn(0f, 1f))
         updateSettings(newSettings)
     }
 
@@ -404,9 +536,29 @@ class SentencePlayer @Inject constructor(
         updateSettings(newSettings)
     }
 
+    fun setSleepTimerMinutes(minutes: Int) {
+        val normalizedMinutes = PlaybackSettings.normalizeSleepTimerMinutes(minutes)
+        updateSettings(_settings.value.copy(sleepTimerMinutes = normalizedMinutes))
+        startSleepTimer(normalizedMinutes)
+    }
+
     fun setVolumeKeyEnabled(enabled: Boolean) {
         val newSettings = _settings.value.copy(volumeKeyEnabled = enabled)
         updateSettings(newSettings)
+    }
+
+    private fun startSleepTimer(minutes: Int) {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        if (minutes <= 0) return
+
+        sleepTimerJob = scope.launch {
+            delay(minutes * SLEEP_TIMER_MINUTE_MS)
+            if (!isActive) return@launch
+            pause()
+            updateSettings(_settings.value.copy(sleepTimerMinutes = 0))
+            sleepTimerJob = null
+        }
     }
 
     private fun checkSentenceEnd(position: Long) {
@@ -485,6 +637,8 @@ class SentencePlayer @Inject constructor(
 
         audioPlayer.pause()
         _state.value = _state.value.copy(
+            isPlaying = true,
+            isAudioPlaying = false,
             isInInterval = true,
             intervalCountdown = (settings.repeatInterval / 1000).toInt()
         )
@@ -507,6 +661,8 @@ class SentencePlayer @Inject constructor(
         val settings = _settings.value
         audioPlayer.pause()
         _state.value = _state.value.copy(
+            isPlaying = true,
+            isAudioPlaying = false,
             isInInterval = true,
             intervalCountdown = (settings.repeatInterval / 1000).toInt()
         )
@@ -630,6 +786,7 @@ class SentencePlayer @Inject constructor(
     fun release() {
         saveCurrentPosition()
         scope.cancel()
+        sleepTimerJob = null
         audioPlayer.release()
     }
 }

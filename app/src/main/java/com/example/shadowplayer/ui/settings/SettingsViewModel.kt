@@ -59,6 +59,13 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
+     * 设置睡眠定时
+     */
+    fun setSleepTimerMinutes(minutes: Int) {
+        sentencePlayer.setSleepTimerMinutes(minutes)
+    }
+
+    /**
      * 设置音量键控制开关
      */
     fun setVolumeKeyEnabled(enabled: Boolean) {

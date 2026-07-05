@@ -25,6 +25,7 @@ fun SettingsScreen(
     var showSpeedMenu by remember { mutableStateOf(false) }
     var showRepeatMenu by remember { mutableStateOf(false) }
     var showIntervalMenu by remember { mutableStateOf(false) }
+    var showSleepTimerMenu by remember { mutableStateOf(false) }
     var showSeekIntervalMenu by remember { mutableStateOf(false) }
 
     Column(
@@ -113,6 +114,30 @@ fun SettingsScreen(
                 }
             }
 
+            // 睡眠定时
+            Box {
+                SettingsItem(
+                    icon = Icons.Default.Timer,
+                    title = "睡眠定时",
+                    subtitle = PlaybackSettings.sleepTimerLabel(settings.sleepTimerMinutes),
+                    onClick = { showSleepTimerMenu = true }
+                )
+                DropdownMenu(
+                    expanded = showSleepTimerMenu,
+                    onDismissRequest = { showSleepTimerMenu = false }
+                ) {
+                    PlaybackSettings.SLEEP_TIMER_OPTIONS.forEach { minutes ->
+                        DropdownMenuItem(
+                            text = { Text(PlaybackSettings.sleepTimerLabel(minutes)) },
+                            onClick = {
+                                viewModel.setSleepTimerMinutes(minutes)
+                                showSleepTimerMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+
             // 快进快退间隔
             Box {
                 SettingsItem(
@@ -154,7 +179,7 @@ fun SettingsScreen(
             SettingsToggleItem(
                 icon = Icons.AutoMirrored.Filled.VolumeUp,
                 title = "音量键控制",
-                subtitle = "开启后：有字幕时切换句子，无字幕时快进快退",
+                subtitle = "关闭时调系统音量；开启后用于切换句子或快进快退",
                 checked = settings.volumeKeyEnabled,
                 onCheckedChange = { viewModel.setVolumeKeyEnabled(it) }
             )
