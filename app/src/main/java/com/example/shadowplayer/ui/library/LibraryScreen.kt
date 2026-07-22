@@ -13,7 +13,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -1225,39 +1224,85 @@ fun TagsSection(
     onFavoriteClick: (AudioFile) -> Unit,
     onAddTagClick: (AudioFile) -> Unit
 ) {
-    val rootTags = remember(allTags) { allTags.filter { it.parentId == null } }
-    val activeRootId = remember(selectedTagId, allTags) {
-        if (selectedTagId == null) return@remember null
-        val selected = allTags.find { it.id == selectedTagId } ?: return@remember null
-        if (selected.parentId == null) selected.id else selected.parentId
-    }
-    val displayedSubTags = remember(activeRootId, allTags) {
-        if (activeRootId == null) emptyList() else allTags.filter { it.parentId == activeRootId }
+    var tagMenuExpanded by remember { mutableStateOf(false) }
+    val tagTree = remember(allTags) { buildTagTree(allTags) }
+    val tagsById = remember(allTags) { allTags.associateBy { it.id } }
+    val selectedTagLabel = remember(selectedTagId, tagsById) {
+        selectedTagId?.let { id ->
+            tagsById[id]?.let { buildTagPathLabel(it, tagsById) }
+        } ?: "全部标签"
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
         if (!isSelectionMode) {
-            Row(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                LazyRow(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    item { FilterChip(selected = selectedTagId == null, onClick = { onTagClick(null) }, label = { Text("全部") }) }
-                    items(rootTags) { tag ->
-                        FilterChip(
-                            selected = activeRootId == tag.id,
-                            onClick = { onTagClick(tag.id) },
-                            label = { Text(tag.name) },
-                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primaryContainer, selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    OutlinedButton(
+                        onClick = { tagMenuExpanded = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Label, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            selectedTagLabel,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
+                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                    }
+                    DropdownMenu(
+                        expanded = tagMenuExpanded,
+                        onDismissRequest = { tagMenuExpanded = false },
+                        modifier = Modifier.widthIn(min = 260.dp).heightIn(max = 420.dp)
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("全部标签") },
+                            onClick = {
+                                onTagClick(null)
+                                tagMenuExpanded = false
+                            },
+                            leadingIcon = {
+                                if (selectedTagId == null) {
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                }
+                            }
+                        )
+                        tagTree.forEach { (tag, depth) ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = tag.name,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(start = (depth * 18).dp)
+                                    )
+                                },
+                                onClick = {
+                                    onTagClick(tag.id)
+                                    tagMenuExpanded = false
+                                },
+                                leadingIcon = {
+                                    if (selectedTagId == tag.id) {
+                                        Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                    } else {
+                                        Icon(
+                                            if (depth == 0) Icons.AutoMirrored.Filled.Label else Icons.Default.SubdirectoryArrowRight,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
                 IconButton(onClick = onManageTags) { Icon(Icons.Default.Settings, "管理标签", tint = MaterialTheme.colorScheme.primary) }
-            }
-
-            if (displayedSubTags.isNotEmpty()) {
-                LazyRow(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(displayedSubTags) { tag ->
-                        FilterChip(selected = selectedTagId == tag.id, onClick = { onTagClick(tag.id) }, label = { Text(tag.name) })
-                    }
-                }
             }
             HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
         }
@@ -1274,6 +1319,17 @@ fun TagsSection(
             onAddTagClick = if(!isSelectionMode) onAddTagClick else null
         )
     }
+}
+
+private fun buildTagPathLabel(tag: Tag, tagsById: Map<Long, Tag>): String {
+    val names = mutableListOf<String>()
+    var current: Tag? = tag
+    repeat(16) {
+        val node = current ?: return@repeat
+        names += node.name
+        current = node.parentId?.let(tagsById::get)
+    }
+    return names.asReversed().joinToString(" / ")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

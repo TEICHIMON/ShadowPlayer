@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -54,7 +56,8 @@ class SentencePlayer @Inject constructor(
     private var pendingLrcContent: String? = null
     private var pendingSubtitleType: String? = null
 
-    private var currentAudioId: Long = -1L
+    private val _currentAudioId = MutableStateFlow(-1L)
+    val currentAudioId: StateFlow<Long> = _currentAudioId.asStateFlow()
 
     // [关键修复] 增加 seeking 标志位，防止 seekTo 触发的回调导致逻辑重入或死循环
     private var isSeeking = false
@@ -102,13 +105,23 @@ class SentencePlayer @Inject constructor(
                 if (duration > 0) {
                     _state.value = _state.value.copy(totalDuration = duration)
                     updateSentencesWithDuration(duration)
-                    if (currentAudioId > 0) {
+                    val audioId = _currentAudioId.value
+                    if (audioId > 0) {
                         launch(Dispatchers.IO) {
-                            repository.updateDuration(currentAudioId, duration)
+                            repository.updateDuration(audioId, duration)
                         }
                     }
                 }
             }
+        }
+
+        scope.launch {
+            _state
+                .map { it.currentSentence?.text.orEmpty() }
+                .distinctUntilChanged()
+                .collectLatest { subtitle ->
+                    audioPlayer.updateNotificationSubtitle(subtitle.ifBlank { null })
+                }
         }
     }
 
@@ -116,10 +129,10 @@ class SentencePlayer @Inject constructor(
         return prefs.getLong(KEY_LAST_PLAYED_AUDIO_ID, -1L)
     }
 
-    fun getCurrentAudioId(): Long = currentAudioId
+    fun getCurrentAudioId(): Long = _currentAudioId.value
 
     fun isPlayingAudio(audioId: Long): Boolean {
-        return currentAudioId == audioId && currentAudioId > 0
+        return _currentAudioId.value == audioId && _currentAudioId.value > 0
     }
 
     fun isCurrentlyPlaying(): Boolean {
@@ -228,7 +241,7 @@ class SentencePlayer @Inject constructor(
         pendingLrcContent = lrcContent
         pendingSubtitleType = subtitlePath?.substringAfterLast('.', "")?.lowercase()
 
-        currentAudioId = audioId
+        _currentAudioId.value = audioId
         if (audioId > 0) {
             prefs.edit { putLong(KEY_LAST_PLAYED_AUDIO_ID, audioId) }
             updatePlaylistIndex(audioId)
@@ -423,10 +436,11 @@ class SentencePlayer @Inject constructor(
     }
 
     private fun saveCurrentPosition() {
-        if (currentAudioId > 0) {
+        val audioId = _currentAudioId.value
+        if (audioId > 0) {
             val position = _state.value.currentPosition
             scope.launch(Dispatchers.IO) {
-                repository.updateLastPosition(currentAudioId, position)
+                repository.updateLastPosition(audioId, position)
             }
         }
     }
@@ -436,10 +450,11 @@ class SentencePlayer @Inject constructor(
         positionSaveJob = scope.launch {
             while (isActive) {
                 delay(POSITION_SAVE_INTERVAL_MS)
-                if (_state.value.isPlaying && currentAudioId > 0) {
+                val audioId = _currentAudioId.value
+                if (_state.value.isPlaying && audioId > 0) {
                     val position = _state.value.currentPosition
                     withContext(Dispatchers.IO) {
-                        repository.updateLastPosition(currentAudioId, position)
+                        repository.updateLastPosition(audioId, position)
                     }
                 }
             }
@@ -453,13 +468,13 @@ class SentencePlayer @Inject constructor(
 
     private fun loadSettings() {
         val speed = prefs.getFloat("speed", 1.0f)
+        val volume = PlaybackSettings.normalizeVolume(prefs.getFloat("volume", 1.0f))
         val repeatCount = prefs.getInt("repeat_count", 1)
         val repeatInterval = prefs.getLong("repeat_interval", 2000L)
         val autoNext = prefs.getBoolean("auto_next", true)
         val showSubtitle = prefs.getBoolean("show_subtitle", true)
         val seekInterval = prefs.getLong("seek_interval", 10000L)
         val volumeKeyEnabled = prefs.getBoolean("volume_key_enabled", false)
-        val volume = prefs.getFloat("volume", 1.0f).coerceIn(0f, 1f)
         val savedSleepTimerMinutes = prefs.getInt(KEY_SLEEP_TIMER_MINUTES, 0)
         if (savedSleepTimerMinutes != 0) {
             prefs.edit { putInt(KEY_SLEEP_TIMER_MINUTES, 0) }
@@ -497,7 +512,7 @@ class SentencePlayer @Inject constructor(
 
     fun updateSettings(settings: PlaybackSettings) {
         val boundedSettings = settings.copy(
-            volume = settings.volume.coerceIn(0f, 1f),
+            volume = PlaybackSettings.normalizeVolume(settings.volume),
             sleepTimerMinutes = PlaybackSettings.normalizeSleepTimerMinutes(settings.sleepTimerMinutes)
         )
         _settings.value = boundedSettings
@@ -512,7 +527,7 @@ class SentencePlayer @Inject constructor(
     }
 
     fun setVolume(volume: Float) {
-        val newSettings = _settings.value.copy(volume = volume.coerceIn(0f, 1f))
+        val newSettings = _settings.value.copy(volume = volume)
         updateSettings(newSettings)
     }
 

@@ -1,15 +1,22 @@
 package com.example.shadowplayer.service
 
 import android.content.Intent
+import android.os.Bundle
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionCommands
+import androidx.media3.session.SessionResult
 import com.example.shadowplayer.player.AudioPlayer
 import com.example.shadowplayer.player.LearningSessionPlayer
 import com.example.shadowplayer.player.MediaCommandDispatcher
+import com.example.shadowplayer.player.PlaybackCoordinator
 import com.example.shadowplayer.player.SentencePlayer
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -19,11 +26,26 @@ class PlaybackService : MediaSessionService() {
 
     @Inject lateinit var audioPlayer: AudioPlayer
     @Inject lateinit var sentencePlayer: SentencePlayer
+    @Inject lateinit var playbackCoordinator: PlaybackCoordinator
 
     private var mediaSession: MediaSession? = null
+    private lateinit var notificationCommandDispatcher: NotificationAudioCommandDispatcher
+    private val previousAudioCommand = SessionCommand(
+        PlaybackNotificationActions.ACTION_PREVIOUS_AUDIO,
+        Bundle.EMPTY
+    )
+    private val nextAudioCommand = SessionCommand(
+        PlaybackNotificationActions.ACTION_NEXT_AUDIO,
+        Bundle.EMPTY
+    )
 
     override fun onCreate() {
         super.onCreate()
+        setMediaNotificationProvider(ShadowMediaNotificationProvider(this, sentencePlayer))
+        notificationCommandDispatcher = NotificationAudioCommandDispatcher(
+            previousAudioAction = playbackCoordinator::playPreviousAudio,
+            nextAudioAction = playbackCoordinator::playNextAudio
+        )
 
         val commandDispatcher = MediaCommandDispatcher(
             playAction = sentencePlayer::play,
@@ -36,13 +58,13 @@ class PlaybackService : MediaSessionService() {
         )
         val sessionPlayer = LearningSessionPlayer(audioPlayer.player, commandDispatcher)
 
-        val previousSentenceButton = CommandButton.Builder(CommandButton.ICON_PREVIOUS)
-            .setPlayerCommand(Player.COMMAND_SEEK_TO_PREVIOUS)
-            .setDisplayName("上一句")
+        val previousAudioButton = CommandButton.Builder(CommandButton.ICON_PREVIOUS)
+            .setSessionCommand(previousAudioCommand)
+            .setDisplayName("上一条音频")
             .build()
-        val nextSentenceButton = CommandButton.Builder(CommandButton.ICON_NEXT)
-            .setPlayerCommand(Player.COMMAND_SEEK_TO_NEXT)
-            .setDisplayName("下一句")
+        val nextAudioButton = CommandButton.Builder(CommandButton.ICON_NEXT)
+            .setSessionCommand(nextAudioCommand)
+            .setDisplayName("下一条音频")
             .build()
 
         mediaSession = MediaSession.Builder(this, sessionPlayer)
@@ -54,12 +76,32 @@ class PlaybackService : MediaSessionService() {
                     if (controller.packageName != packageName && !controller.isTrusted) {
                         return MediaSession.ConnectionResult.reject()
                     }
-                    return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                    val sessionCommands = SessionCommands.Builder()
+                        .addSessionCommands(
+                            MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.commands
+                        )
+                        .add(previousAudioCommand)
+                        .add(nextAudioCommand)
                         .build()
+                    return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                        .setAvailableSessionCommands(sessionCommands)
+                        .build()
+                }
+
+                override fun onCustomCommand(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                    customCommand: SessionCommand,
+                    args: Bundle
+                ): ListenableFuture<SessionResult> {
+                    if (notificationCommandDispatcher.dispatch(customCommand.customAction)) {
+                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                    }
+                    return super.onCustomCommand(session, controller, customCommand, args)
                 }
             })
             .setMediaButtonPreferences(
-                listOf(previousSentenceButton, nextSentenceButton)
+                listOf(previousAudioButton, nextAudioButton)
             )
             .build()
     }

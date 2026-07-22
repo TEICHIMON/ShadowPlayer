@@ -46,6 +46,8 @@ class AudioPlayer @Inject constructor(
 
     private var exoPlayer: ExoPlayer? = null
     private var volume: Float = 1.0f
+    private var currentTitle: String = ""
+    private var currentNotificationSubtitle: String? = null
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
@@ -135,6 +137,8 @@ class AudioPlayer @Inject constructor(
         try {
             val player = getOrCreatePlayer()
             player.playWhenReady = false
+            currentTitle = title
+            currentNotificationSubtitle = null
 
             // [修复] 加载新音频时重置 duration，避免显示上一首的时长
             _duration.value = 0L
@@ -146,6 +150,9 @@ class AudioPlayer @Inject constructor(
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle(title)
+                        .setArtist(currentNotificationSubtitle)
+                        .setSubtitle(currentNotificationSubtitle)
+                        .setDescription(currentNotificationSubtitle)
                         .build()
                 )
                 .build()
@@ -178,6 +185,25 @@ class AudioPlayer @Inject constructor(
         val boundedVolume = volume.coerceIn(0f, 1f)
         this.volume = boundedVolume
         exoPlayer?.volume = boundedVolume
+    }
+
+    fun updateNotificationSubtitle(subtitle: String?) {
+        val player = exoPlayer ?: return
+        val currentItem = player.currentMediaItem ?: return
+        if (currentNotificationSubtitle == subtitle) return
+        currentNotificationSubtitle = subtitle
+
+        val mediaMetadata = currentItem.mediaMetadata
+            .buildUpon()
+            .setTitle(currentTitle.ifBlank { mediaMetadataTitle(currentItem) })
+            .setArtist(subtitle)
+            .setSubtitle(subtitle)
+            .setDescription(subtitle)
+            .build()
+        val updatedItem = currentItem.buildUpon()
+            .setMediaMetadata(mediaMetadata)
+            .build()
+        player.replaceMediaItem(player.currentMediaItemIndex, updatedItem)
     }
 
     fun getDuration(): Long {
@@ -223,5 +249,9 @@ class AudioPlayer @Inject constructor(
     private fun resolvedDuration(player: Player): Long {
         val duration = player.duration
         return if (duration > 0 && duration != C.TIME_UNSET) duration else 0L
+    }
+
+    private fun mediaMetadataTitle(mediaItem: MediaItem): String {
+        return mediaItem.mediaMetadata.title?.toString().orEmpty()
     }
 }

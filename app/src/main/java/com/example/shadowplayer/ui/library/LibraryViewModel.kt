@@ -15,8 +15,11 @@ import com.example.shadowplayer.player.SentencePlayer
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.net.URLDecoder
 import javax.inject.Inject
 
@@ -75,6 +78,7 @@ class LibraryViewModel @Inject constructor(
 
     // [问题3修复] 用于保存文件夹滚动位置的 Map (path -> index to offset)
     private val _folderScrollPositions = mutableMapOf<String?, Pair<Int, Int>>()
+    private val scanMutex = Mutex()
 
     fun saveScrollPosition(path: String?, index: Int, offset: Int) {
         _folderScrollPositions[path] = index to offset
@@ -107,8 +111,7 @@ class LibraryViewModel @Inject constructor(
     private val _audioDetailsState = MutableStateFlow<AudioFileDetails?>(null)
     val audioDetailsState: StateFlow<AudioFileDetails?> = _audioDetailsState.asStateFlow()
 
-    val currentPlayingAudioId: StateFlow<Long> = sentencePlayer.state
-        .map { sentencePlayer.getCurrentAudioId() }
+    val currentPlayingAudioId: StateFlow<Long> = sentencePlayer.currentAudioId
         .stateIn(viewModelScope, SharingStarted.Lazily, -1L)
 
     private val _isRefreshing = MutableStateFlow(false)
@@ -356,9 +359,8 @@ class LibraryViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            scanFolders.first { it.isNotEmpty() || true }
             kotlinx.coroutines.delay(1000)
-            scanAllFoldersIncremental()
+            scanAllFoldersIncrementalInternal()
         }
     }
 
@@ -521,9 +523,10 @@ class LibraryViewModel @Inject constructor(
 
     fun refreshFolders() {
         viewModelScope.launch {
+            if (_isRefreshing.value) return@launch
             _isRefreshing.value = true
             try {
-                scanAllFoldersIncremental()
+                scanAllFoldersIncrementalInternal()
             } finally {
                 _isRefreshing.value = false
             }
@@ -531,37 +534,59 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun scanFolderIncremental(folder: ScanFolder) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch {
+            scanMutex.withLock {
+                _isScanning.value = true
+                try {
+                    scanFolderIncrementalInternal(folder)
+                } finally {
+                    _isScanning.value = false
+                }
+            }
+        }
+    }
+
+    fun scanAllFoldersIncremental() {
+        viewModelScope.launch {
+            scanAllFoldersIncrementalInternal()
+        }
+    }
+
+    fun scanAllFolders() { scanAllFoldersIncremental() }
+
+    private suspend fun scanAllFoldersIncrementalInternal() {
+        scanMutex.withLock {
             _isScanning.value = true
             try {
-                val uri = Uri.parse(folder.path)
-                val docFile = DocumentFile.fromTreeUri(context, uri)
-                val folderDocId = extractDocumentId(folder.path)
-                val existingPaths = repository.getAllPaths().filter { path ->
-                    val fileDocId = extractDocumentId(path)
-                    fileDocId.startsWith("$folderDocId%2F") ||
-                            fileDocId.startsWith("$folderDocId/") ||
-                            fileDocId == folderDocId
-                }.toHashSet()
-                val foundPaths = mutableSetOf<String>()
-                val newAudioFiles = mutableListOf<AudioFile>()
-                docFile?.let { scanDirectoryIncremental(it, newAudioFiles, existingPaths, foundPaths) }
-                if (newAudioFiles.isNotEmpty()) repository.insertAllIgnore(newAudioFiles)
-                val deletedPaths = existingPaths - foundPaths
-                deletedPaths.forEach { repository.deleteAudioByPath(it) }
-            } catch (e: Exception) {
-                Log.e("LibraryViewModel", "Incremental scan failed", e)
+                val folders = repository.getAllScanFolders().first()
+                folders.forEach { scanFolderIncrementalInternal(it) }
             } finally {
                 _isScanning.value = false
             }
         }
     }
 
-    fun scanAllFoldersIncremental() {
-        viewModelScope.launch { scanFolders.value.forEach { scanFolderIncremental(it) } }
+    private suspend fun scanFolderIncrementalInternal(folder: ScanFolder) = withContext(Dispatchers.IO) {
+        try {
+            val uri = Uri.parse(folder.path)
+            val docFile = DocumentFile.fromTreeUri(context, uri)
+            val folderDocId = extractDocumentId(folder.path)
+            val existingPaths = repository.getAllPaths().filter { path ->
+                val fileDocId = extractDocumentId(path)
+                fileDocId.startsWith("$folderDocId%2F") ||
+                        fileDocId.startsWith("$folderDocId/") ||
+                        fileDocId == folderDocId
+            }.toHashSet()
+            val foundPaths = mutableSetOf<String>()
+            val newAudioFiles = mutableListOf<AudioFile>()
+            docFile?.let { scanDirectoryIncremental(it, newAudioFiles, existingPaths, foundPaths) }
+            if (newAudioFiles.isNotEmpty()) repository.insertAllIgnore(newAudioFiles)
+            val deletedPaths = existingPaths - foundPaths
+            deletedPaths.forEach { repository.deleteAudioByPath(it) }
+        } catch (e: Exception) {
+            Log.e("LibraryViewModel", "Incremental scan failed", e)
+        }
     }
-
-    fun scanAllFolders() { scanAllFoldersIncremental() }
 
     private fun scanDirectoryIncremental(
         directory: DocumentFile,

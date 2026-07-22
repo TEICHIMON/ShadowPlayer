@@ -21,6 +21,9 @@ data class PlaybackSettings(
         val SLEEP_TIMER_OPTIONS = listOf(0, 5, 10, 15, 30, 45, 60)
         val SEEK_INTERVAL_OPTIONS = listOf(5000L, 10000L, 15000L, 30000L)
 
+        fun normalizeVolume(volume: Float): Float =
+            if (volume.isNaN()) 1.0f else volume.coerceIn(0f, 1f)
+
         fun normalizeSleepTimerMinutes(minutes: Int): Int =
             if (minutes in SLEEP_TIMER_OPTIONS) minutes else 0
 
