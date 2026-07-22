@@ -1,31 +1,111 @@
 package com.example.shadowplayer.ui.player
 
-import android.graphics.Typeface
-import android.text.TextUtils
-import android.view.Gravity
-import android.widget.TextView
+import android.content.res.Configuration
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.automirrored.filled.VolumeDown
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.BluetoothAudio
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.FastRewind
+import androidx.compose.material.icons.filled.Forward10
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.SubtitlesOff
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -36,27 +116,35 @@ import com.example.shadowplayer.player.AudioOutputType
 import com.example.shadowplayer.player.LrcParser
 import com.example.shadowplayer.player.LrcSentence
 import com.example.shadowplayer.player.PlaybackSettings
+import com.example.shadowplayer.player.SentencePlayerState
+import com.example.shadowplayer.ui.theme.ShadowPlayerTheme
+import kotlinx.coroutines.flow.first
 import kotlin.math.roundToInt
 
-@OptIn(ExperimentalFoundationApi::class)
+internal data class PlayerScreenUiState(
+    val audioId: Long?,
+    val title: String,
+    val playerState: SentencePlayerState,
+    val settings: PlaybackSettings,
+    val systemVolume: Float,
+    val audioOutputRoute: AudioOutputRoute,
+    val currentPlaylistIndex: Int,
+    val playlistSize: Int,
+    val canPlayPreviousTrack: Boolean,
+    val canPlayNextTrack: Boolean
+)
+
 @Composable
 fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel()
 ) {
     val playerState by viewModel.playerState.collectAsState()
     val settings by viewModel.settings.collectAsState()
+    val systemVolume by viewModel.systemVolume.collectAsState()
     val currentAudioFile by viewModel.currentAudioFile.collectAsState()
     val playlist by viewModel.playlist.collectAsState()
     val currentPlaylistIndex by viewModel.currentPlaylistIndex.collectAsState()
     val audioOutputRoute by viewModel.audioOutputRoute.collectAsState()
-
-    var isDragging by remember { mutableStateOf(false) }
-    var dragPosition by remember { mutableLongStateOf(0L) }
-
-    val displayPosition = if (isDragging) dragPosition else playerState.currentPosition
-    val targetIndex = if (isDragging) {
-        if (playerState.sentences.isNotEmpty()) LrcParser.findSentenceIndex(playerState.sentences, dragPosition) else -1
-    } else playerState.currentIndex
 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -67,24 +155,18 @@ fun PlayerScreen(
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     DisposableEffect(Unit) {
         val activity = context as? MainActivity
         activity?.onVolumeUp = {
-            if (viewModel.isVolumeKeyEnabled()) {
-                viewModel.handleVolumeUp()
-            }
-            viewModel.isVolumeKeyEnabled() // 返回是否拦截音量键
+            if (viewModel.isVolumeKeyEnabled()) viewModel.handleVolumeUp()
+            viewModel.isVolumeKeyEnabled()
         }
         activity?.onVolumeDown = {
-            if (viewModel.isVolumeKeyEnabled()) {
-                viewModel.handleVolumeDown()
-            }
-            viewModel.isVolumeKeyEnabled() // 返回是否拦截音量键
+            if (viewModel.isVolumeKeyEnabled()) viewModel.handleVolumeDown()
+            viewModel.isVolumeKeyEnabled()
         }
         onDispose {
             activity?.onVolumeUp = null
@@ -92,296 +174,578 @@ fun PlayerScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        // [修复] 标题添加滚动效果
-        Text(
-            text = currentAudioFile?.title ?: "未选择音频",
-            style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier
-                .fillMaxWidth()
-                .basicMarquee(),
-            textAlign = TextAlign.Center,
-            maxLines = 1
-        )
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        AudioOutputBar(
-            route = audioOutputRoute,
-            onClick = { viewModel.showOutputSwitcher(context) }
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // [问题1修复] 字幕区域使用 weight(1f)，下方控件紧凑排列
-        if (settings.showSubtitle && playerState.sentences.isNotEmpty()) {
-            SubtitleList(
-                sentences = playerState.sentences,
-                currentIndex = targetIndex,
-                onSentenceClick = { viewModel.seekToSentence(it) },
-                modifier = Modifier.weight(1f).fillMaxWidth()
-            )
-        } else {
-            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                val currentText = if (targetIndex in playerState.sentences.indices) playerState.sentences[targetIndex].text else null
-                if (currentText != null && settings.showSubtitle) {
-                    SelectableTextView(
-                        text = currentText,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-                    )
-                } else {
-                    Text(
-                        text = if (currentAudioFile == null) "请从文件库选择音频" else "无字幕",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        // 跟读间隔倒计时提示
-        if (playerState.isInInterval) {
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-            ) {
-                Text(
-                    text = "请跟读 (${playerState.intervalCountdown}秒)",
-                    modifier = Modifier.fillMaxWidth().padding(8.dp),
-                    textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.titleMedium
-                )
-            }
-        }
-
-        // 底部控制区域容器
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(4.dp) // 紧凑排列
-        ) {
-            // 进度条
-            ProgressSection(
-                currentPosition = displayPosition,
-                totalDuration = playerState.totalDuration,
-                onSeek = { position -> viewModel.seekTo(position); isDragging = false },
-                onPreview = { position -> isDragging = true; dragPosition = position }
-            )
-
-            VolumeSlider(
-                volume = settings.volume,
-                onVolumeChange = { viewModel.setVolume(it) }
-            )
-
-            // 主要播放控制 (上一句, 播放/暂停, 下一句)
-            PlaybackControls(
-                isPlaying = playerState.isPlaying,
-                onPlayPause = { viewModel.togglePlayPause() },
-                onPrevious = { viewModel.previousSentence() },
-                onNext = { viewModel.nextSentence() }
-            )
-
-            // [问题1修复] 合并 次要控制 (上一首, 快退, 快进, 下一首)
-            SecondaryControls(
-                seekInterval = settings.seekInterval,
-                onSeekBackward = { viewModel.seekBackward() },
-                onSeekForward = { viewModel.seekForward() },
-                canPlayPrevious = viewModel.canPlayPrevious(),
-                canPlayNext = viewModel.canPlayNext(),
-                onPreviousTrack = { viewModel.playPrevious() },
-                onNextTrack = { viewModel.playNext() },
-                currentIndex = currentPlaylistIndex,
-                totalTracks = playlist.size
-            )
-
-            // 底部设置栏
-            SettingsBar(
-                settings = settings,
-                currentRepeat = playerState.currentRepeat,
-                onSpeedChange = { viewModel.setSpeed(it) },
-                onRepeatCountChange = { viewModel.setRepeatCount(it) },
-                onIntervalChange = { viewModel.setRepeatInterval(it) },
-                onSleepTimerChange = { viewModel.setSleepTimerMinutes(it) },
-                onToggleSubtitle = { viewModel.toggleSubtitle() }
-            )
-        }
-    }
-}
-
-@Composable
-private fun AudioOutputBar(
-    route: AudioOutputRoute,
-    onClick: () -> Unit
-) {
-    val icon = when (route.type) {
-        AudioOutputType.BLUETOOTH -> Icons.Default.BluetoothAudio
-        AudioOutputType.WIRED -> Icons.Default.Headphones
-        AudioOutputType.SPEAKER -> Icons.Default.PhoneAndroid
-        AudioOutputType.OTHER -> Icons.Default.VolumeUp
-    }
-
-    Surface(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = "音频输出：${route.name}",
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1
-            )
-            Spacer(Modifier.width(4.dp))
-            Icon(
-                Icons.Default.ArrowDropDown,
-                contentDescription = "切换音频输出",
-                modifier = Modifier.size(18.dp)
-            )
-        }
-    }
-}
-
-@Composable
-fun SelectableTextView(
-    text: String,
-    modifier: Modifier = Modifier
-) {
-    val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
-    val textSize = 20f
-
-    AndroidView(
-        factory = { context ->
-            TextView(context).apply {
-                setTextColor(textColor)
-                this.textSize = textSize
-                gravity = Gravity.CENTER
-                setTextIsSelectable(true)
-                maxLines = 10
-                ellipsize = TextUtils.TruncateAt.END
-            }
-        },
-        update = { textView ->
-            textView.text = text
-            textView.setTextColor(textColor)
-        },
-        modifier = modifier
+    PlayerScreenContent(
+        uiState = PlayerScreenUiState(
+            audioId = currentAudioFile?.id,
+            title = currentAudioFile?.title ?: "未选择音频",
+            playerState = playerState,
+            settings = settings,
+            systemVolume = systemVolume.percent,
+            audioOutputRoute = audioOutputRoute,
+            currentPlaylistIndex = currentPlaylistIndex,
+            playlistSize = playlist.size,
+            canPlayPreviousTrack = viewModel.canPlayPrevious(),
+            canPlayNextTrack = viewModel.canPlayNext()
+        ),
+        onShowOutputSwitcher = { viewModel.showOutputSwitcher(context) },
+        onSentenceClick = viewModel::seekToSentence,
+        onSeek = viewModel::seekTo,
+        onPlayPause = viewModel::togglePlayPause,
+        onPreviousSentence = viewModel::previousSentence,
+        onNextSentence = viewModel::nextSentence,
+        onSpeedChange = viewModel::setSpeed,
+        onRepeatCountChange = viewModel::setRepeatCount,
+        onIntervalChange = viewModel::setRepeatInterval,
+        onSystemVolumeChange = viewModel::setSystemVolume,
+        onPlayerVolumeChange = viewModel::setPlayerVolume,
+        onPreviousTrack = viewModel::playPrevious,
+        onNextTrack = viewModel::playNext,
+        onSeekBackward = viewModel::seekBackward,
+        onSeekForward = viewModel::seekForward,
+        onSleepTimerChange = viewModel::setSleepTimerMinutes,
+        onToggleSubtitle = viewModel::toggleSubtitle
     )
 }
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun SubtitleList(
-    sentences: List<LrcSentence>,
+internal fun PlayerScreenContent(
+    uiState: PlayerScreenUiState,
+    onShowOutputSwitcher: () -> Unit,
+    onSentenceClick: (Int) -> Unit,
+    onSeek: (Long) -> Unit,
+    onPlayPause: () -> Unit,
+    onPreviousSentence: () -> Unit,
+    onNextSentence: () -> Unit,
+    onSpeedChange: (Float) -> Unit,
+    onRepeatCountChange: (Int) -> Unit,
+    onIntervalChange: (Long) -> Unit,
+    onSystemVolumeChange: (Float) -> Unit,
+    onPlayerVolumeChange: (Float) -> Unit,
+    onPreviousTrack: () -> Unit,
+    onNextTrack: () -> Unit,
+    onSeekBackward: () -> Unit,
+    onSeekForward: () -> Unit,
+    onSleepTimerChange: (Int) -> Unit,
+    onToggleSubtitle: () -> Unit
+) {
+    var isDragging by remember { mutableStateOf(false) }
+    var dragPosition by remember { mutableLongStateOf(0L) }
+    var showMoreControls by rememberSaveable { mutableStateOf(false) }
+    var isSubtitleSearchOpen by rememberSaveable { mutableStateOf(false) }
+    var subtitleSearchQuery by rememberSaveable { mutableStateOf("") }
+    var subtitleSearchAudioId by rememberSaveable { mutableStateOf<Long?>(null) }
+
+    LaunchedEffect(uiState.audioId) {
+        if (subtitleSearchAudioId != uiState.audioId) {
+            isSubtitleSearchOpen = false
+            subtitleSearchQuery = ""
+            subtitleSearchAudioId = uiState.audioId
+        }
+    }
+
+    LaunchedEffect(uiState.settings.showSubtitle, uiState.playerState.sentences) {
+        if (!uiState.settings.showSubtitle || uiState.playerState.sentences.isEmpty()) {
+            isSubtitleSearchOpen = false
+            subtitleSearchQuery = ""
+        }
+    }
+
+    val displayPosition = if (isDragging) dragPosition else uiState.playerState.currentPosition
+    val targetIndex = if (isDragging && uiState.playerState.sentences.isNotEmpty()) {
+        LrcParser.findSentenceIndex(uiState.playerState.sentences, dragPosition)
+    } else {
+        uiState.playerState.currentIndex
+    }
+    val subtitleItems = remember(uiState.playerState.sentences, subtitleSearchQuery) {
+        filterSubtitleItems(uiState.playerState.sentences, subtitleSearchQuery)
+    }
+    val canSearch = uiState.audioId != null &&
+        uiState.settings.showSubtitle &&
+        uiState.playerState.sentences.isNotEmpty()
+
+    Scaffold(
+        topBar = {
+            PlayerTopBar(
+                title = uiState.title,
+                route = uiState.audioOutputRoute,
+                canSearch = canSearch,
+                isSearchOpen = isSubtitleSearchOpen,
+                searchQuery = subtitleSearchQuery,
+                searchResultCount = subtitleItems.size,
+                onOutputClick = onShowOutputSwitcher,
+                onOpenSearch = { isSubtitleSearchOpen = true },
+                onSearchQueryChange = { subtitleSearchQuery = it },
+                onClearSearch = { subtitleSearchQuery = "" },
+                onCloseSearch = {
+                    isSubtitleSearchOpen = false
+                    subtitleSearchQuery = ""
+                }
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SubtitleArea(
+                audioId = uiState.audioId,
+                showSubtitle = uiState.settings.showSubtitle,
+                subtitleItems = subtitleItems,
+                currentIndex = targetIndex,
+                searchQuery = subtitleSearchQuery,
+                isSearching = isSubtitleSearchOpen,
+                isInInterval = uiState.playerState.isInInterval,
+                intervalCountdown = uiState.playerState.intervalCountdown,
+                onSentenceClick = onSentenceClick,
+                onShowSubtitle = onToggleSubtitle,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            )
+
+            PlayerControlDeck(
+                currentPosition = displayPosition,
+                totalDuration = uiState.playerState.totalDuration,
+                isPlaying = uiState.playerState.isPlaying,
+                settings = uiState.settings,
+                currentRepeat = uiState.playerState.currentRepeat,
+                onSeekPreview = { position ->
+                    isDragging = true
+                    dragPosition = position
+                },
+                onSeek = { position ->
+                    onSeek(position)
+                    isDragging = false
+                },
+                onPlayPause = onPlayPause,
+                onPreviousSentence = onPreviousSentence,
+                onNextSentence = onNextSentence,
+                onSpeedChange = onSpeedChange,
+                onRepeatCountChange = onRepeatCountChange,
+                onIntervalChange = onIntervalChange,
+                onMoreControls = { showMoreControls = true }
+            )
+        }
+    }
+
+    if (showMoreControls) {
+        MoreControlsSheet(
+            settings = uiState.settings,
+            systemVolume = uiState.systemVolume,
+            currentPlaylistIndex = uiState.currentPlaylistIndex,
+            playlistSize = uiState.playlistSize,
+            canPlayPreviousTrack = uiState.canPlayPreviousTrack,
+            canPlayNextTrack = uiState.canPlayNextTrack,
+            onDismiss = { showMoreControls = false },
+            onSystemVolumeChange = onSystemVolumeChange,
+            onPlayerVolumeChange = onPlayerVolumeChange,
+            onPreviousTrack = onPreviousTrack,
+            onNextTrack = onNextTrack,
+            onSeekBackward = onSeekBackward,
+            onSeekForward = onSeekForward,
+            onSleepTimerChange = onSleepTimerChange,
+            onToggleSubtitle = onToggleSubtitle
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun PlayerTopBar(
+    title: String,
+    route: AudioOutputRoute,
+    canSearch: Boolean,
+    isSearchOpen: Boolean,
+    searchQuery: String,
+    searchResultCount: Int,
+    onOutputClick: () -> Unit,
+    onOpenSearch: () -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onClearSearch: () -> Unit,
+    onCloseSearch: () -> Unit
+) {
+    if (isSearchOpen) {
+        val focusRequester = remember { FocusRequester() }
+        val focusManager = LocalFocusManager.current
+        val keyboardController = LocalSoftwareKeyboardController.current
+
+        LaunchedEffect(Unit) {
+            focusRequester.requestFocus()
+            keyboardController?.show()
+        }
+
+        TopAppBar(
+            navigationIcon = {
+                IconButton(
+                    onClick = {
+                        keyboardController?.hide()
+                        focusManager.clearFocus()
+                        onCloseSearch()
+                    }
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = "关闭搜索")
+                }
+            },
+            title = {
+                TextField(
+                    value = searchQuery,
+                    onValueChange = onSearchQueryChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester)
+                        .testTag("subtitle_search_field"),
+                    placeholder = { Text("搜索字幕") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = onClearSearch) {
+                                Icon(Icons.Default.Clear, contentDescription = "清空搜索")
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent
+                    )
+                )
+            },
+            actions = {
+                if (searchQuery.trim().isNotEmpty()) {
+                    Text(
+                        text = "$searchResultCount 条",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                }
+            }
+        )
+    } else {
+        CenterAlignedTopAppBar(
+            title = {
+                Text(
+                    text = title,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .basicMarquee(),
+                    maxLines = 1,
+                    overflow = TextOverflow.Clip,
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.titleLarge
+                )
+            },
+            navigationIcon = {
+                IconButton(onClick = onOutputClick) {
+                    Icon(
+                        imageVector = audioOutputIcon(route.type),
+                        contentDescription = "音频输出：${route.name}"
+                    )
+                }
+            },
+            actions = {
+                IconButton(onClick = onOpenSearch, enabled = canSearch) {
+                    Icon(Icons.Default.Search, contentDescription = "搜索字幕")
+                }
+            }
+        )
+    }
+}
+
+private fun audioOutputIcon(type: AudioOutputType) = when (type) {
+    AudioOutputType.BLUETOOTH -> Icons.Default.BluetoothAudio
+    AudioOutputType.WIRED -> Icons.Default.Headphones
+    AudioOutputType.SPEAKER -> Icons.Default.PhoneAndroid
+    AudioOutputType.OTHER -> Icons.AutoMirrored.Filled.VolumeUp
+}
+
+@Composable
+private fun SubtitleArea(
+    audioId: Long?,
+    showSubtitle: Boolean,
+    subtitleItems: List<SubtitleListItem>,
     currentIndex: Int,
+    searchQuery: String,
+    isSearching: Boolean,
+    isInInterval: Boolean,
+    intervalCountdown: Int,
+    onSentenceClick: (Int) -> Unit,
+    onShowSubtitle: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(modifier = modifier.testTag("subtitle_area")) {
+        when {
+            audioId == null -> SubtitleEmptyState(
+                icon = Icons.Default.Subtitles,
+                message = "请从文件库选择音频"
+            )
+
+            !showSubtitle -> SubtitleEmptyState(
+                icon = Icons.Default.SubtitlesOff,
+                message = "字幕已关闭",
+                actionLabel = "显示字幕",
+                onAction = onShowSubtitle
+            )
+
+            isSearching && subtitleItems.isEmpty() -> SubtitleEmptyState(
+                icon = Icons.Default.Search,
+                message = "未找到匹配字幕"
+            )
+
+            subtitleItems.isEmpty() -> SubtitleEmptyState(
+                icon = Icons.Default.SubtitlesOff,
+                message = "未找到字幕"
+            )
+
+            else -> SubtitleList(
+                subtitleItems = subtitleItems,
+                currentIndex = currentIndex,
+                searchQuery = searchQuery,
+                onSentenceClick = onSentenceClick,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        AnimatedVisibility(
+            visible = isInInterval,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 12.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                shadowElevation = 4.dp,
+                modifier = Modifier.testTag("interval_overlay")
+            ) {
+                Text(
+                    text = "请跟读 · ${intervalCountdown.coerceAtLeast(0)} 秒",
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    style = MaterialTheme.typography.titleSmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubtitleEmptyState(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    message: String,
+    actionLabel: String? = null,
+    onAction: () -> Unit = {}
+) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(36.dp)
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (actionLabel != null) {
+            TextButton(onClick = onAction) { Text(actionLabel) }
+        }
+    }
+}
+
+@Composable
+private fun SubtitleList(
+    subtitleItems: List<SubtitleListItem>,
+    currentIndex: Int,
+    searchQuery: String,
     onSentenceClick: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
-    val density = LocalDensity.current
+    val visibleCurrentIndex = subtitleItems.indexOfFirst { it.originalIndex == currentIndex }
 
-    LaunchedEffect(currentIndex) {
-        if (currentIndex >= 0 && currentIndex < sentences.size) {
-            val layoutInfo = listState.layoutInfo
-            val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
-            val itemHeight = with(density) { 56.dp.toPx() }.toInt()
-            val centerOffset = (viewportHeight / 2) - (itemHeight / 2)
+    LaunchedEffect(visibleCurrentIndex, subtitleItems) {
+        if (visibleCurrentIndex < 0) return@LaunchedEffect
 
-            listState.animateScrollToItem(
-                index = currentIndex,
-                scrollOffset = -centerOffset
-            )
+        val viewportHeight = snapshotFlow {
+            listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset
+        }.first { it > 0 }
+
+        listState.animateScrollToItem(
+            index = visibleCurrentIndex,
+            scrollOffset = -(viewportHeight / 2)
+        )
+        withFrameNanos { }
+
+        val layoutInfo = listState.layoutInfo
+        val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == visibleCurrentIndex }
+        if (itemInfo != null) {
+            val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2
+            val itemCenter = itemInfo.offset + itemInfo.size / 2
+            listState.animateScrollBy((itemCenter - viewportCenter).toFloat())
         }
     }
 
-    val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
-    val highlightTextColor = MaterialTheme.colorScheme.primary.toArgb()
-    val highlightBgColor = MaterialTheme.colorScheme.primaryContainer
-    val normalBgColor = MaterialTheme.colorScheme.surface
-
-    LazyColumn(state = listState, modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        itemsIndexed(sentences) { index, sentence ->
-            val isCurrentSentence = index == currentIndex
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (isCurrentSentence) highlightBgColor else normalBgColor)
-                    .clickable { onSentenceClick(index) }
-                    .padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = formatTime(sentence.startTime),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(50.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-
-                AndroidView(
-                    factory = { context ->
-                        TextView(context).apply {
-                            setTextIsSelectable(true)
-                            textSize = 14f
-                            // [问题1修复] 移除了 maxLines 和 ellipsize 限制，确保长字幕能完整显示
-                        }
-                    },
-                    update = { textView ->
-                        textView.text = sentence.text
-                        textView.setTextColor(if (isCurrentSentence) highlightTextColor else textColor)
-                        textView.setTypeface(null, if (isCurrentSentence) Typeface.BOLD else Typeface.NORMAL)
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-            }
+    LazyColumn(
+        state = listState,
+        modifier = modifier.testTag("subtitle_list"),
+        contentPadding = PaddingValues(vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        items(items = subtitleItems, key = { it.originalIndex }) { item ->
+            SubtitleRow(
+                item = item,
+                isCurrentSentence = item.originalIndex == currentIndex,
+                searchQuery = searchQuery,
+                onClick = { onSentenceClick(item.originalIndex) }
+            )
         }
     }
 }
 
 @Composable
-fun VolumeSlider(
-    volume: Float,
-    onVolumeChange: (Float) -> Unit
+private fun SubtitleRow(
+    item: SubtitleListItem,
+    isCurrentSentence: Boolean,
+    searchQuery: String,
+    onClick: () -> Unit
 ) {
-    val currentVolume = volume.coerceIn(0f, 1f)
-    val volumePercent = (currentVolume * 100).roundToInt()
-    val icon = when {
-        currentVolume <= 0f -> Icons.Default.VolumeOff
-        currentVolume < 0.5f -> Icons.Default.VolumeDown
-        else -> Icons.Default.VolumeUp
+    val backgroundColor = if (isCurrentSentence) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        Color.Transparent
+    }
+    val textColor = if (isCurrentSentence) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    val indicatorColor = if (isCurrentSentence) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        Color.Transparent
     }
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+            .testTag("subtitle_row_${item.originalIndex}")
+            .clip(RoundedCornerShape(12.dp))
+            .background(backgroundColor)
+            .clickable(onClick = onClick)
+            .padding(vertical = if (isCurrentSentence) 12.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = "音量",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(22.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(3.dp)
+                .clip(RoundedCornerShape(50))
+                .background(indicatorColor)
         )
-        Spacer(modifier = Modifier.width(8.dp))
-        Slider(
-            value = currentVolume,
-            onValueChange = { onVolumeChange(it.coerceIn(0f, 1f)) },
-            valueRange = 0f..1f,
-            modifier = Modifier.weight(1f).height(28.dp)
-        )
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(Modifier.width(8.dp))
         Text(
-            text = "$volumePercent%",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.End,
-            modifier = Modifier.width(42.dp)
+            text = formatTime(item.sentence.startTime),
+            modifier = Modifier.width(42.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (isCurrentSentence) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            }
         )
+        Spacer(Modifier.width(4.dp))
+        SelectionContainer(modifier = Modifier.weight(1f)) {
+            Text(
+                text = highlightedSubtitleText(
+                    text = item.sentence.text,
+                    query = searchQuery,
+                    highlightColor = MaterialTheme.colorScheme.tertiaryContainer
+                ),
+                color = textColor,
+                fontSize = if (isCurrentSentence) 18.sp else 16.sp,
+                lineHeight = if (isCurrentSentence) 26.sp else 23.sp,
+                fontWeight = if (isCurrentSentence) FontWeight.SemiBold else FontWeight.Normal,
+                modifier = Modifier.padding(end = 10.dp)
+            )
+        }
+    }
+}
+
+private fun highlightedSubtitleText(
+    text: String,
+    query: String,
+    highlightColor: Color
+): AnnotatedString = buildAnnotatedString {
+    append(text)
+    findSubtitleMatchRanges(text, query).forEach { range ->
+        addStyle(
+            style = SpanStyle(background = highlightColor),
+            start = range.first,
+            end = range.last + 1
+        )
+    }
+}
+
+@Composable
+private fun PlayerControlDeck(
+    currentPosition: Long,
+    totalDuration: Long,
+    isPlaying: Boolean,
+    settings: PlaybackSettings,
+    currentRepeat: Int,
+    onSeekPreview: (Long) -> Unit,
+    onSeek: (Long) -> Unit,
+    onPlayPause: () -> Unit,
+    onPreviousSentence: () -> Unit,
+    onNextSentence: () -> Unit,
+    onSpeedChange: (Float) -> Unit,
+    onRepeatCountChange: (Int) -> Unit,
+    onIntervalChange: (Long) -> Unit,
+    onMoreControls: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("player_control_deck"),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+            ProgressSection(
+                currentPosition = currentPosition,
+                totalDuration = totalDuration,
+                onSeek = onSeek,
+                onPreview = onSeekPreview
+            )
+            PlaybackControls(
+                isPlaying = isPlaying,
+                onPlayPause = onPlayPause,
+                onPrevious = onPreviousSentence,
+                onNext = onNextSentence
+            )
+            LearningControlsBar(
+                settings = settings,
+                currentRepeat = currentRepeat,
+                onSpeedChange = onSpeedChange,
+                onRepeatCountChange = onRepeatCountChange,
+                onIntervalChange = onIntervalChange,
+                onMoreControls = onMoreControls
+            )
+        }
     }
 }
 
@@ -412,17 +776,19 @@ fun ProgressSection(
                 pendingSeekPosition = previewTime
                 onPreview(previewTime)
             },
-            onValueChangeFinished = {
-                onSeek(pendingSeekPosition)
-            },
-            modifier = Modifier.fillMaxWidth().height(20.dp) // 减小 Slider 占用高度
+            onValueChangeFinished = { onSeek(pendingSeekPosition) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(24.dp)
         )
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(text = formatTime(currentPosition), style = MaterialTheme.typography.bodySmall)
-            Text(text = formatTime(totalDuration), style = MaterialTheme.typography.bodySmall)
+            Text(formatTime(currentPosition), style = MaterialTheme.typography.labelSmall)
+            Text(formatTime(totalDuration), style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -440,187 +806,395 @@ fun PlaybackControls(
         verticalAlignment = Alignment.CenterVertically
     ) {
         IconButton(onClick = onPrevious) {
-            Icon(Icons.Default.SkipPrevious, "上一句", Modifier.size(32.dp))
+            Icon(Icons.Default.SkipPrevious, "上一句", Modifier.size(30.dp))
         }
-
         FilledIconButton(
             onClick = onPlayPause,
-            modifier = Modifier.size(56.dp) // 稍微调小一点
+            modifier = Modifier.size(56.dp)
         ) {
             Icon(
-                if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                if (isPlaying) "暂停" else "播放",
-                Modifier.size(32.dp)
+                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                contentDescription = if (isPlaying) "暂停" else "播放",
+                modifier = Modifier.size(32.dp)
             )
         }
-
         IconButton(onClick = onNext) {
-            Icon(Icons.Default.SkipNext, "下一句", Modifier.size(32.dp))
-        }
-    }
-}
-
-/**
- * [问题1修复] 合并后的次要控制栏：包括 曲目切换 和 快进快退
- */
-@Composable
-fun SecondaryControls(
-    seekInterval: Long,
-    onSeekBackward: () -> Unit,
-    onSeekForward: () -> Unit,
-    canPlayPrevious: Boolean,
-    canPlayNext: Boolean,
-    onPreviousTrack: () -> Unit,
-    onNextTrack: () -> Unit,
-    currentIndex: Int,
-    totalTracks: Int
-) {
-    val intervalSeconds = (seekInterval / 1000).toInt()
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween, // 分散对齐
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // 上一首
-        IconButton(onClick = onPreviousTrack, enabled = canPlayPrevious) {
-            Icon(Icons.Default.FastRewind, "上一首", Modifier.size(24.dp))
-        }
-
-        // 快退
-        TextButton(onClick = onSeekBackward) {
-            Icon(Icons.Default.Replay10, null, Modifier.size(20.dp))
-            Text(" -${intervalSeconds}s", style = MaterialTheme.typography.labelMedium)
-        }
-
-        // 进度/曲目信息
-        if (totalTracks > 0) {
-            Text(
-                text = "${currentIndex + 1}/$totalTracks",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        // 快进
-        TextButton(onClick = onSeekForward) {
-            Text("+${intervalSeconds}s ", style = MaterialTheme.typography.labelMedium)
-            Icon(Icons.Default.Forward10, null, Modifier.size(20.dp))
-        }
-
-        // 下一首
-        IconButton(onClick = onNextTrack, enabled = canPlayNext) {
-            Icon(Icons.Default.FastForward, "下一首", Modifier.size(24.dp))
+            Icon(Icons.Default.SkipNext, "下一句", Modifier.size(30.dp))
         }
     }
 }
 
 @Composable
-fun SettingsBar(
+private fun LearningControlsBar(
     settings: PlaybackSettings,
     currentRepeat: Int,
     onSpeedChange: (Float) -> Unit,
     onRepeatCountChange: (Int) -> Unit,
     onIntervalChange: (Long) -> Unit,
-    onSleepTimerChange: (Int) -> Unit,
-    onToggleSubtitle: () -> Unit
+    onMoreControls: () -> Unit
 ) {
     var showSpeedMenu by remember { mutableStateOf(false) }
     var showRepeatMenu by remember { mutableStateOf(false) }
     var showIntervalMenu by remember { mutableStateOf(false) }
-    var showSleepTimerMenu by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 速度
         Box {
             TextButton(onClick = { showSpeedMenu = true }) {
                 Text("${settings.speed}x", style = MaterialTheme.typography.labelLarge)
+                Icon(Icons.Default.ExpandMore, contentDescription = null, Modifier.size(16.dp))
             }
-            DropdownMenu(expanded = showSpeedMenu, onDismissRequest = { showSpeedMenu = false }) {
+            DropdownMenu(showSpeedMenu, onDismissRequest = { showSpeedMenu = false }) {
                 PlaybackSettings.SPEED_OPTIONS.forEach { speed ->
                     DropdownMenuItem(
                         text = { Text("${speed}x") },
-                        onClick = { onSpeedChange(speed); showSpeedMenu = false }
+                        onClick = {
+                            onSpeedChange(speed)
+                            showSpeedMenu = false
+                        }
                     )
                 }
             }
         }
 
-        // 重复
         Box {
             TextButton(onClick = { showRepeatMenu = true }) {
-                Icon(Icons.Default.Repeat, null, Modifier.size(16.dp))
+                Icon(Icons.Default.Repeat, contentDescription = null, Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("${currentRepeat}/${settings.repeatCount}", style = MaterialTheme.typography.labelLarge)
+                Text("$currentRepeat/${settings.repeatCount}")
             }
-            DropdownMenu(expanded = showRepeatMenu, onDismissRequest = { showRepeatMenu = false }) {
+            DropdownMenu(showRepeatMenu, onDismissRequest = { showRepeatMenu = false }) {
                 PlaybackSettings.REPEAT_OPTIONS.forEach { count ->
                     DropdownMenuItem(
                         text = { Text("重复 $count 次") },
-                        onClick = { onRepeatCountChange(count); showRepeatMenu = false }
+                        onClick = {
+                            onRepeatCountChange(count)
+                            showRepeatMenu = false
+                        }
                     )
                 }
             }
         }
 
-        // 间隔
         Box {
             TextButton(onClick = { showIntervalMenu = true }) {
-                Icon(Icons.Default.Timer, null, Modifier.size(16.dp))
+                Icon(Icons.Default.Timer, contentDescription = null, Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("${settings.repeatInterval / 1000}s", style = MaterialTheme.typography.labelLarge)
+                Text("${settings.repeatInterval / 1000}s")
             }
-            DropdownMenu(expanded = showIntervalMenu, onDismissRequest = { showIntervalMenu = false }) {
+            DropdownMenu(showIntervalMenu, onDismissRequest = { showIntervalMenu = false }) {
                 PlaybackSettings.INTERVAL_OPTIONS.forEach { interval ->
                     DropdownMenuItem(
-                        text = { Text("${interval / 1000}秒") },
-                        onClick = { onIntervalChange(interval); showIntervalMenu = false }
+                        text = { Text("${interval / 1000} 秒") },
+                        onClick = {
+                            onIntervalChange(interval)
+                            showIntervalMenu = false
+                        }
                     )
                 }
             }
         }
 
-        // 睡眠定时
-        Box {
-            TextButton(onClick = { showSleepTimerMenu = true }) {
-                Icon(Icons.Default.Timer, null, Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    PlaybackSettings.sleepTimerLabel(settings.sleepTimerMinutes),
-                    style = MaterialTheme.typography.labelLarge
-                )
-            }
-            DropdownMenu(expanded = showSleepTimerMenu, onDismissRequest = { showSleepTimerMenu = false }) {
-                PlaybackSettings.SLEEP_TIMER_OPTIONS.forEach { minutes ->
-                    DropdownMenuItem(
-                        text = { Text(PlaybackSettings.sleepTimerLabel(minutes)) },
-                        onClick = { onSleepTimerChange(minutes); showSleepTimerMenu = false }
+        IconButton(onClick = onMoreControls) {
+            Icon(Icons.Default.Tune, contentDescription = "更多控制")
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MoreControlsSheet(
+    settings: PlaybackSettings,
+    systemVolume: Float,
+    currentPlaylistIndex: Int,
+    playlistSize: Int,
+    canPlayPreviousTrack: Boolean,
+    canPlayNextTrack: Boolean,
+    onDismiss: () -> Unit,
+    onSystemVolumeChange: (Float) -> Unit,
+    onPlayerVolumeChange: (Float) -> Unit,
+    onPreviousTrack: () -> Unit,
+    onNextTrack: () -> Unit,
+    onSeekBackward: () -> Unit,
+    onSeekForward: () -> Unit,
+    onSleepTimerChange: (Int) -> Unit,
+    onToggleSubtitle: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showSleepTimerMenu by remember { mutableStateOf(false) }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        modifier = Modifier.testTag("more_controls_sheet")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 620.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+        ) {
+            Text("更多控制", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(16.dp))
+
+            VolumeSlider(
+                label = "系统音量",
+                volume = systemVolume,
+                onVolumeChange = onSystemVolumeChange
+            )
+            Spacer(Modifier.height(8.dp))
+            VolumeSlider(
+                label = "播放器音量",
+                volume = settings.volume,
+                onVolumeChange = onPlayerVolumeChange
+            )
+
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            Text(
+                text = "曲目与跳转",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            TrackControls(
+                currentIndex = currentPlaylistIndex,
+                totalTracks = playlistSize,
+                canPlayPrevious = canPlayPreviousTrack,
+                canPlayNext = canPlayNextTrack,
+                onPreviousTrack = onPreviousTrack,
+                onNextTrack = onNextTrack
+            )
+            SeekControls(
+                seekInterval = settings.seekInterval,
+                onSeekBackward = onSeekBackward,
+                onSeekForward = onSeekForward
+            )
+
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            ListItem(
+                headlineContent = { Text("睡眠定时") },
+                supportingContent = { Text("到时自动暂停播放") },
+                leadingContent = { Icon(Icons.Default.Timer, contentDescription = null) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { showSleepTimerMenu = true }) {
+                            Text(PlaybackSettings.sleepTimerLabel(settings.sleepTimerMinutes))
+                            Icon(Icons.Default.ExpandMore, contentDescription = null)
+                        }
+                        DropdownMenu(
+                            expanded = showSleepTimerMenu,
+                            onDismissRequest = { showSleepTimerMenu = false }
+                        ) {
+                            PlaybackSettings.SLEEP_TIMER_OPTIONS.forEach { minutes ->
+                                DropdownMenuItem(
+                                    text = { Text(PlaybackSettings.sleepTimerLabel(minutes)) },
+                                    onClick = {
+                                        onSleepTimerChange(minutes)
+                                        showSleepTimerMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            )
+            ListItem(
+                headlineContent = { Text("显示字幕") },
+                supportingContent = { Text("显示完整字幕列表") },
+                leadingContent = {
+                    Icon(
+                        if (settings.showSubtitle) Icons.Default.Subtitles else Icons.Default.SubtitlesOff,
+                        contentDescription = null
+                    )
+                },
+                trailingContent = {
+                    Switch(
+                        checked = settings.showSubtitle,
+                        onCheckedChange = { onToggleSubtitle() }
                     )
                 }
-            }
+            )
+            Spacer(Modifier.height(24.dp))
         }
+    }
+}
 
-        // 字幕
-        IconButton(onClick = onToggleSubtitle) {
+@Composable
+private fun TrackControls(
+    currentIndex: Int,
+    totalTracks: Int,
+    canPlayPrevious: Boolean,
+    canPlayNext: Boolean,
+    onPreviousTrack: () -> Unit,
+    onNextTrack: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = onPreviousTrack, enabled = canPlayPrevious) {
+            Icon(Icons.Default.FastRewind, contentDescription = "上一首")
+        }
+        Text(
+            text = if (totalTracks > 0) "${currentIndex + 1}/$totalTracks" else "暂无播放列表",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        IconButton(onClick = onNextTrack, enabled = canPlayNext) {
+            Icon(Icons.Default.FastForward, contentDescription = "下一首")
+        }
+    }
+}
+
+@Composable
+private fun SeekControls(
+    seekInterval: Long,
+    onSeekBackward: () -> Unit,
+    onSeekForward: () -> Unit
+) {
+    val intervalSeconds = (seekInterval / 1000).toInt()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        OutlinedButton(onClick = onSeekBackward, modifier = Modifier.weight(1f)) {
+            Icon(Icons.Default.Replay10, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text("-$intervalSeconds 秒")
+        }
+        OutlinedButton(onClick = onSeekForward, modifier = Modifier.weight(1f)) {
+            Text("+$intervalSeconds 秒")
+            Spacer(Modifier.width(6.dp))
+            Icon(Icons.Default.Forward10, contentDescription = null)
+        }
+    }
+}
+
+@Composable
+fun VolumeSlider(
+    label: String,
+    volume: Float,
+    onVolumeChange: (Float) -> Unit,
+    contentDescription: String = label
+) {
+    val currentVolume = volume.coerceIn(0f, 1f)
+    val volumePercent = (currentVolume * 100).roundToInt()
+    val icon = when {
+        currentVolume <= 0f -> Icons.AutoMirrored.Filled.VolumeOff
+        currentVolume < 0.5f -> Icons.AutoMirrored.Filled.VolumeDown
+        else -> Icons.AutoMirrored.Filled.VolumeUp
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Icon(
-                if (settings.showSubtitle) Icons.Default.Subtitles else Icons.Default.SubtitlesOff,
-                "字幕",
-                tint = if(settings.showSubtitle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Slider(
+                value = currentVolume,
+                onValueChange = { onVolumeChange(it.coerceIn(0f, 1f)) },
+                valueRange = 0f..1f,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(28.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = "$volumePercent%",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.End,
+                modifier = Modifier.width(42.dp)
             )
         }
     }
 }
 
 fun formatTime(msInput: Long): String {
-    // [问题2修复] 增加对负数时间的保护，防止显示 12:-55 这种错误格式
-    val ms = if (msInput < 0) 0L else msInput
+    val ms = msInput.coerceAtLeast(0L)
     val totalSeconds = ms / 1000
     val hours = totalSeconds / 3600
     val minutes = (totalSeconds % 3600) / 60
     val seconds = totalSeconds % 60
-    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%d:%02d".format(minutes, seconds)
+    }
+}
+
+private val previewSentences = listOf(
+    LrcSentence(0, 0L, 4_000L, "Shadowing means listening and speaking at almost the same time."),
+    LrcSentence(1, 4_000L, 9_000L, "先听清楚句子的节奏，再自然地跟读。"),
+    LrcSentence(2, 9_000L, 15_000L, "This longer subtitle demonstrates how a multi-line sentence stays readable and centered."),
+    LrcSentence(3, 15_000L, 20_000L, "保持放松，注意连读和重音。")
+)
+
+@Preview(name = "小屏", widthDp = 360, heightDp = 640, showBackground = true)
+@Preview(
+    name = "深色大字体",
+    widthDp = 411,
+    heightDp = 891,
+    fontScale = 1.3f,
+    uiMode = Configuration.UI_MODE_NIGHT_YES,
+    showBackground = true
+)
+@Composable
+private fun PlayerScreenPreview() {
+    ShadowPlayerTheme(dynamicColor = false) {
+        PlayerScreenContent(
+            uiState = PlayerScreenUiState(
+                audioId = 1L,
+                title = "Shadowing Practice · Lesson 01",
+                playerState = SentencePlayerState(
+                    sentences = previewSentences,
+                    currentIndex = 1,
+                    currentRepeat = 2,
+                    currentPosition = 6_500L,
+                    totalDuration = 120_000L,
+                    isPlaying = true
+                ),
+                settings = PlaybackSettings(repeatCount = 3, repeatInterval = 2_000L),
+                systemVolume = 0.65f,
+                audioOutputRoute = AudioOutputRoute("蓝牙耳机", AudioOutputType.BLUETOOTH),
+                currentPlaylistIndex = 0,
+                playlistSize = 6,
+                canPlayPreviousTrack = false,
+                canPlayNextTrack = true
+            ),
+            onShowOutputSwitcher = {},
+            onSentenceClick = {},
+            onSeek = {},
+            onPlayPause = {},
+            onPreviousSentence = {},
+            onNextSentence = {},
+            onSpeedChange = {},
+            onRepeatCountChange = {},
+            onIntervalChange = {},
+            onSystemVolumeChange = {},
+            onPlayerVolumeChange = {},
+            onPreviousTrack = {},
+            onNextTrack = {},
+            onSeekBackward = {},
+            onSeekForward = {},
+            onSleepTimerChange = {},
+            onToggleSubtitle = {}
+        )
+    }
 }

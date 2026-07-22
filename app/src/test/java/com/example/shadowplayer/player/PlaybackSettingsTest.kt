@@ -10,8 +10,17 @@ class PlaybackSettingsTest {
     fun defaultsKeepSystemVolumeKeysAndSleepTimerOff() {
         val settings = PlaybackSettings()
 
+        assertEquals(1.0f, settings.volume, 0.0001f)
         assertFalse(settings.volumeKeyEnabled)
         assertEquals(0, settings.sleepTimerMinutes)
+    }
+
+    @Test
+    fun normalizesPlayerVolumeToUnitRange() {
+        assertEquals(0f, PlaybackSettings.normalizeVolume(-0.5f), 0.0001f)
+        assertEquals(0.5f, PlaybackSettings.normalizeVolume(0.5f), 0.0001f)
+        assertEquals(1f, PlaybackSettings.normalizeVolume(1.5f), 0.0001f)
+        assertEquals(1f, PlaybackSettings.normalizeVolume(Float.NaN), 0.0001f)
     }
 
     @Test
