@@ -1,11 +1,16 @@
 package com.example.shadowplayer.ui.player
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.res.Configuration
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,6 +19,7 @@ import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,7 +33,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
@@ -36,6 +41,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.BluetoothAudio
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
@@ -47,6 +53,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Subtitles
@@ -54,6 +61,7 @@ import androidx.compose.material.icons.filled.SubtitlesOff
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -66,6 +74,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -74,6 +84,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -83,6 +94,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -93,8 +105,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
@@ -119,6 +133,7 @@ import com.example.shadowplayer.player.PlaybackSettings
 import com.example.shadowplayer.player.SentencePlayerState
 import com.example.shadowplayer.ui.theme.ShadowPlayerTheme
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 internal data class PlayerScreenUiState(
@@ -147,6 +162,9 @@ fun PlayerScreen(
     val audioOutputRoute by viewModel.audioOutputRoute.collectAsState()
 
     val context = LocalContext.current
+    val clipboardManager = remember(context) {
+        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -189,6 +207,9 @@ fun PlayerScreen(
         ),
         onShowOutputSwitcher = { viewModel.showOutputSwitcher(context) },
         onSentenceClick = viewModel::seekToSentence,
+        onCopySubtitleText = { text ->
+            clipboardManager.setPrimaryClip(ClipData.newPlainText("字幕", text))
+        },
         onSeek = viewModel::seekTo,
         onPlayPause = viewModel::togglePlayPause,
         onPreviousSentence = viewModel::previousSentence,
@@ -213,6 +234,7 @@ internal fun PlayerScreenContent(
     uiState: PlayerScreenUiState,
     onShowOutputSwitcher: () -> Unit,
     onSentenceClick: (Int) -> Unit,
+    onCopySubtitleText: (String) -> Unit,
     onSeek: (Long) -> Unit,
     onPlayPause: () -> Unit,
     onPreviousSentence: () -> Unit,
@@ -235,19 +257,35 @@ internal fun PlayerScreenContent(
     var isSubtitleSearchOpen by rememberSaveable { mutableStateOf(false) }
     var subtitleSearchQuery by rememberSaveable { mutableStateOf("") }
     var subtitleSearchAudioId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var shouldFocusSubtitleSearch by remember { mutableStateOf(false) }
+    var isSubtitleSelectionMode by remember { mutableStateOf(false) }
+    var selectedSubtitleIndices by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     LaunchedEffect(uiState.audioId) {
         if (subtitleSearchAudioId != uiState.audioId) {
             isSubtitleSearchOpen = false
             subtitleSearchQuery = ""
+            shouldFocusSubtitleSearch = false
+            isSubtitleSelectionMode = false
+            selectedSubtitleIndices = emptySet()
             subtitleSearchAudioId = uiState.audioId
         }
     }
 
-    LaunchedEffect(uiState.settings.showSubtitle, uiState.playerState.sentences) {
+    LaunchedEffect(uiState.settings.showSubtitle, uiState.playerState.sentences.size) {
         if (!uiState.settings.showSubtitle || uiState.playerState.sentences.isEmpty()) {
+            isSubtitleSelectionMode = false
+            selectedSubtitleIndices = emptySet()
             isSubtitleSearchOpen = false
             subtitleSearchQuery = ""
+            shouldFocusSubtitleSearch = false
+        } else {
+            selectedSubtitleIndices = selectedSubtitleIndices
+                .filterTo(linkedSetOf()) { it in uiState.playerState.sentences.indices }
         }
     }
 
@@ -264,22 +302,83 @@ internal fun PlayerScreenContent(
         uiState.settings.showSubtitle &&
         uiState.playerState.sentences.isNotEmpty()
 
+    fun exitSubtitleSelection() {
+        isSubtitleSelectionMode = false
+        selectedSubtitleIndices = emptySet()
+    }
+
+    fun enterSubtitleSelection(index: Int) {
+        shouldFocusSubtitleSearch = false
+        keyboardController?.hide()
+        focusManager.clearFocus()
+        isSubtitleSelectionMode = true
+        selectedSubtitleIndices = selectedSubtitleIndices + index
+    }
+
+    fun handleSubtitleClick(index: Int) {
+        if (!isSubtitleSelectionMode) {
+            onSentenceClick(index)
+            return
+        }
+
+        selectedSubtitleIndices = if (index in selectedSubtitleIndices) {
+            selectedSubtitleIndices - index
+        } else {
+            selectedSubtitleIndices + index
+        }
+    }
+
+    BackHandler(enabled = isSubtitleSelectionMode) {
+        exitSubtitleSelection()
+    }
+
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             PlayerTopBar(
                 title = uiState.title,
                 route = uiState.audioOutputRoute,
                 canSearch = canSearch,
+                isSelectionMode = isSubtitleSelectionMode,
+                selectedCount = selectedSubtitleIndices.size,
+                canSelectAll = subtitleItems.any { it.originalIndex !in selectedSubtitleIndices },
+                canCopySelection = selectedSubtitleIndices.isNotEmpty(),
                 isSearchOpen = isSubtitleSearchOpen,
                 searchQuery = subtitleSearchQuery,
                 searchResultCount = subtitleItems.size,
+                requestSearchFocus = shouldFocusSubtitleSearch,
                 onOutputClick = onShowOutputSwitcher,
-                onOpenSearch = { isSubtitleSearchOpen = true },
+                onOpenSearch = {
+                    shouldFocusSubtitleSearch = true
+                    isSubtitleSearchOpen = true
+                },
                 onSearchQueryChange = { subtitleSearchQuery = it },
                 onClearSearch = { subtitleSearchQuery = "" },
+                onSearchFocusHandled = { shouldFocusSubtitleSearch = false },
                 onCloseSearch = {
                     isSubtitleSearchOpen = false
                     subtitleSearchQuery = ""
+                    shouldFocusSubtitleSearch = false
+                },
+                onExitSelection = ::exitSubtitleSelection,
+                onSelectAll = {
+                    selectedSubtitleIndices = subtitleItems
+                        .mapTo(linkedSetOf()) { it.originalIndex }
+                },
+                onCopySelection = {
+                    val selectedCount = selectedSubtitleIndices.size
+                    val copiedText = buildSubtitleCopyText(
+                        sentences = uiState.playerState.sentences,
+                        selectedIndices = selectedSubtitleIndices
+                    )
+                    if (copiedText.isNotEmpty()) {
+                        onCopySubtitleText(copiedText)
+                        exitSubtitleSelection()
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar("已复制 $selectedCount 条字幕")
+                        }
+                    }
                 }
             )
         }
@@ -298,9 +397,12 @@ internal fun PlayerScreenContent(
                 currentIndex = targetIndex,
                 searchQuery = subtitleSearchQuery,
                 isSearching = isSubtitleSearchOpen,
+                isSelectionMode = isSubtitleSelectionMode,
+                selectedIndices = selectedSubtitleIndices,
                 isInInterval = uiState.playerState.isInInterval,
                 intervalCountdown = uiState.playerState.intervalCountdown,
-                onSentenceClick = onSentenceClick,
+                onSentenceClick = ::handleSubtitleClick,
+                onSentenceLongClick = ::enterSubtitleSelection,
                 onShowSubtitle = onToggleSubtitle,
                 modifier = Modifier
                     .weight(1f)
@@ -359,26 +461,71 @@ private fun PlayerTopBar(
     title: String,
     route: AudioOutputRoute,
     canSearch: Boolean,
+    isSelectionMode: Boolean,
+    selectedCount: Int,
+    canSelectAll: Boolean,
+    canCopySelection: Boolean,
     isSearchOpen: Boolean,
     searchQuery: String,
     searchResultCount: Int,
+    requestSearchFocus: Boolean,
     onOutputClick: () -> Unit,
     onOpenSearch: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onClearSearch: () -> Unit,
-    onCloseSearch: () -> Unit
+    onSearchFocusHandled: () -> Unit,
+    onCloseSearch: () -> Unit,
+    onExitSelection: () -> Unit,
+    onSelectAll: () -> Unit,
+    onCopySelection: () -> Unit
 ) {
-    if (isSearchOpen) {
+    if (isSelectionMode) {
+        TopAppBar(
+            expandedHeight = 48.dp,
+            windowInsets = WindowInsets(0, 0, 0, 0),
+            modifier = Modifier.testTag("subtitle_selection_top_bar"),
+            navigationIcon = {
+                IconButton(onClick = onExitSelection) {
+                    Icon(Icons.Default.Close, contentDescription = "退出多选")
+                }
+            },
+            title = {
+                Text(
+                    text = "已选择 $selectedCount 条",
+                    style = MaterialTheme.typography.titleMedium
+                )
+            },
+            actions = {
+                IconButton(onClick = onSelectAll, enabled = canSelectAll) {
+                    Icon(Icons.Default.SelectAll, contentDescription = "全选字幕")
+                }
+                IconButton(onClick = onCopySelection, enabled = canCopySelection) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = "复制字幕")
+                }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                navigationIconContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                titleContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                actionIconContentColor = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+        )
+    } else if (isSearchOpen) {
         val focusRequester = remember { FocusRequester() }
         val focusManager = LocalFocusManager.current
         val keyboardController = LocalSoftwareKeyboardController.current
 
-        LaunchedEffect(Unit) {
-            focusRequester.requestFocus()
-            keyboardController?.show()
+        LaunchedEffect(requestSearchFocus) {
+            if (requestSearchFocus) {
+                focusRequester.requestFocus()
+                keyboardController?.show()
+                onSearchFocusHandled()
+            }
         }
 
         TopAppBar(
+            expandedHeight = 48.dp,
+            windowInsets = WindowInsets(0, 0, 0, 0),
             navigationIcon = {
                 IconButton(
                     onClick = {
@@ -396,6 +543,7 @@ private fun PlayerTopBar(
                     onValueChange = onSearchQueryChange,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .height(48.dp)
                         .focusRequester(focusRequester)
                         .testTag("subtitle_search_field"),
                     placeholder = { Text("搜索字幕") },
@@ -429,6 +577,8 @@ private fun PlayerTopBar(
         )
     } else {
         CenterAlignedTopAppBar(
+            expandedHeight = 48.dp,
+            windowInsets = WindowInsets(0, 0, 0, 0),
             title = {
                 Text(
                     text = title,
@@ -473,9 +623,12 @@ private fun SubtitleArea(
     currentIndex: Int,
     searchQuery: String,
     isSearching: Boolean,
+    isSelectionMode: Boolean,
+    selectedIndices: Set<Int>,
     isInInterval: Boolean,
     intervalCountdown: Int,
     onSentenceClick: (Int) -> Unit,
+    onSentenceLongClick: (Int) -> Unit,
     onShowSubtitle: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -507,7 +660,10 @@ private fun SubtitleArea(
                 subtitleItems = subtitleItems,
                 currentIndex = currentIndex,
                 searchQuery = searchQuery,
+                isSelectionMode = isSelectionMode,
+                selectedIndices = selectedIndices,
                 onSentenceClick = onSentenceClick,
+                onSentenceLongClick = onSentenceLongClick,
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -570,14 +726,17 @@ private fun SubtitleList(
     subtitleItems: List<SubtitleListItem>,
     currentIndex: Int,
     searchQuery: String,
+    isSelectionMode: Boolean,
+    selectedIndices: Set<Int>,
     onSentenceClick: (Int) -> Unit,
+    onSentenceLongClick: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
     val visibleCurrentIndex = subtitleItems.indexOfFirst { it.originalIndex == currentIndex }
 
-    LaunchedEffect(visibleCurrentIndex, subtitleItems) {
-        if (visibleCurrentIndex < 0) return@LaunchedEffect
+    LaunchedEffect(visibleCurrentIndex, subtitleItems, isSelectionMode) {
+        if (isSelectionMode || visibleCurrentIndex < 0) return@LaunchedEffect
 
         val viewportHeight = snapshotFlow {
             listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset
@@ -608,29 +767,37 @@ private fun SubtitleList(
             SubtitleRow(
                 item = item,
                 isCurrentSentence = item.originalIndex == currentIndex,
+                isSelectionMode = isSelectionMode,
+                isSelected = item.originalIndex in selectedIndices,
                 searchQuery = searchQuery,
-                onClick = { onSentenceClick(item.originalIndex) }
+                onClick = { onSentenceClick(item.originalIndex) },
+                onLongClick = { onSentenceLongClick(item.originalIndex) }
             )
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SubtitleRow(
     item: SubtitleListItem,
     isCurrentSentence: Boolean,
+    isSelectionMode: Boolean,
+    isSelected: Boolean,
     searchQuery: String,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
 ) {
-    val backgroundColor = if (isCurrentSentence) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        Color.Transparent
+    val hapticFeedback = LocalHapticFeedback.current
+    val backgroundColor = when {
+        isSelected -> MaterialTheme.colorScheme.secondaryContainer
+        isCurrentSentence -> MaterialTheme.colorScheme.primaryContainer
+        else -> Color.Transparent
     }
-    val textColor = if (isCurrentSentence) {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    } else {
-        MaterialTheme.colorScheme.onSurface
+    val textColor = when {
+        isSelected -> MaterialTheme.colorScheme.onSecondaryContainer
+        isCurrentSentence -> MaterialTheme.colorScheme.onPrimaryContainer
+        else -> MaterialTheme.colorScheme.onSurface
     }
     val indicatorColor = if (isCurrentSentence) {
         MaterialTheme.colorScheme.primary
@@ -645,18 +812,35 @@ private fun SubtitleRow(
             .testTag("subtitle_row_${item.originalIndex}")
             .clip(RoundedCornerShape(12.dp))
             .background(backgroundColor)
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = {
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onLongClick()
+                }
+            )
             .padding(vertical = if (isCurrentSentence) 12.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxHeight()
-                .width(3.dp)
-                .clip(RoundedCornerShape(50))
-                .background(indicatorColor)
-        )
-        Spacer(Modifier.width(8.dp))
+        if (isSelectionMode) {
+            Checkbox(
+                checked = isSelected,
+                onCheckedChange = null,
+                modifier = Modifier
+                    .size(40.dp)
+                    .testTag("subtitle_checkbox_${item.originalIndex}")
+            )
+            Spacer(Modifier.width(4.dp))
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(3.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(indicatorColor)
+            )
+            Spacer(Modifier.width(8.dp))
+        }
         Text(
             text = formatTime(item.sentence.startTime),
             modifier = Modifier.width(42.dp),
@@ -668,20 +852,20 @@ private fun SubtitleRow(
             }
         )
         Spacer(Modifier.width(4.dp))
-        SelectionContainer(modifier = Modifier.weight(1f)) {
-            Text(
-                text = highlightedSubtitleText(
-                    text = item.sentence.text,
-                    query = searchQuery,
-                    highlightColor = MaterialTheme.colorScheme.tertiaryContainer
-                ),
-                color = textColor,
-                fontSize = if (isCurrentSentence) 18.sp else 16.sp,
-                lineHeight = if (isCurrentSentence) 26.sp else 23.sp,
-                fontWeight = if (isCurrentSentence) FontWeight.SemiBold else FontWeight.Normal,
-                modifier = Modifier.padding(end = 10.dp)
-            )
-        }
+        Text(
+            text = highlightedSubtitleText(
+                text = item.sentence.text,
+                query = searchQuery,
+                highlightColor = MaterialTheme.colorScheme.tertiaryContainer
+            ),
+            color = textColor,
+            fontSize = if (isCurrentSentence) 18.sp else 16.sp,
+            lineHeight = if (isCurrentSentence) 26.sp else 23.sp,
+            fontWeight = if (isCurrentSentence) FontWeight.SemiBold else FontWeight.Normal,
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 10.dp)
+        )
     }
 }
 
@@ -1180,6 +1364,7 @@ private fun PlayerScreenPreview() {
             ),
             onShowOutputSwitcher = {},
             onSentenceClick = {},
+            onCopySubtitleText = {},
             onSeek = {},
             onPlayPause = {},
             onPreviousSentence = {},
