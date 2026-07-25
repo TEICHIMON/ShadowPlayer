@@ -7,13 +7,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
+import androidx.test.espresso.Espresso.pressBack
 import com.example.shadowplayer.player.AudioOutputRoute
 import com.example.shadowplayer.player.AudioOutputType
 import com.example.shadowplayer.player.LrcSentence
@@ -75,6 +80,189 @@ class PlayerScreenUiTest {
         composeRule.onNodeWithText("普通字幕").assertExists()
         composeRule.onNodeWithContentDescription("关闭搜索").performClick()
         composeRule.onNodeWithTag("subtitle_search_field").assertDoesNotExist()
+    }
+
+    @Test
+    fun selectionModeKeepsCopyAndAudioNavigationMutuallyExclusive() {
+        var clickedIndex = -1
+        setPlayerContent(playingState(), onSentenceClick = { clickedIndex = it })
+
+        composeRule.onNodeWithTag("subtitle_row_1").performClick()
+        composeRule.runOnIdle { assertEquals(1, clickedIndex) }
+        clickedIndex = -1
+
+        composeRule.onNodeWithTag("subtitle_row_0").performTouchInput { longClick() }
+        composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
+        composeRule.onNodeWithTag("subtitle_checkbox_0").assertIsDisplayed()
+        composeRule.runOnIdle { assertEquals(-1, clickedIndex) }
+
+        composeRule.onNodeWithTag("subtitle_checkbox_2").performTouchInput { click() }
+        composeRule.onNodeWithText("已选择 2 条").assertIsDisplayed()
+        composeRule.onNodeWithTag("subtitle_checkbox_0").performTouchInput { click() }
+        composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
+        composeRule.runOnIdle { assertEquals(-1, clickedIndex) }
+
+        composeRule.onNodeWithTag("subtitle_row_2").performClick()
+        composeRule.onNodeWithText("已选择 0 条").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("复制字幕").assertIsNotEnabled()
+        composeRule.runOnIdle { assertEquals(-1, clickedIndex) }
+
+        composeRule.onNodeWithTag("subtitle_row_0").performClick()
+        composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
+        composeRule.runOnIdle { assertEquals(-1, clickedIndex) }
+
+        composeRule.onNodeWithContentDescription("退出多选").performClick()
+        composeRule.onNodeWithTag("subtitle_selection_top_bar").assertDoesNotExist()
+
+        composeRule.onNodeWithTag("subtitle_row_2").performClick()
+        composeRule.runOnIdle { assertEquals(2, clickedIndex) }
+    }
+
+    @Test
+    fun nonEmptySubtitleRefreshPreservesSelection() {
+        val state = mutableStateOf(playingState())
+        composeRule.setContent {
+            ShadowPlayerTheme(dynamicColor = false) {
+                TestPlayerContent(state.value)
+            }
+        }
+
+        composeRule.onNodeWithTag("subtitle_row_0").performTouchInput { longClick() }
+        composeRule.runOnIdle {
+            val refreshedSentences = state.value.playerState.sentences
+                .map { it.copy(endTime = it.endTime + 100L) } +
+                LrcSentence(3, 10_000L, 12_000L, "新加载的字幕")
+            state.value = state.value.copy(
+                playerState = state.value.playerState.copy(sentences = refreshedSentences)
+            )
+        }
+
+        composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
+        composeRule.onNodeWithTag("subtitle_checkbox_0").assertIsDisplayed()
+    }
+
+    @Test
+    fun copyUsesOriginalOrderShowsFeedbackAndExitsSelection() {
+        var copiedText = ""
+        setPlayerContent(
+            uiState = playingState(),
+            onCopySubtitleText = { copiedText = it }
+        )
+
+        composeRule.onNodeWithTag("subtitle_row_2").performTouchInput { longClick() }
+        composeRule.onNodeWithTag("subtitle_row_0").performClick()
+        composeRule.onNodeWithContentDescription("复制字幕").performClick()
+
+        composeRule.runOnIdle {
+            assertEquals(
+                "普通字幕\n这是一条会自动换行的较长字幕，用于验证当前句能够按照真实高度居中",
+                copiedText
+            )
+        }
+        composeRule.onNodeWithText("已复制 2 条字幕").assertIsDisplayed()
+        composeRule.onNodeWithTag("subtitle_selection_top_bar").assertDoesNotExist()
+    }
+
+    @Test
+    fun searchSelectionSelectsOnlyVisibleResultsAndRestoresSearch() {
+        val matchingState = playingState().copy(
+            playerState = playingState().playerState.copy(
+                sentences = listOf(
+                    LrcSentence(0, 0L, 1_000L, "匹配第一句"),
+                    LrcSentence(1, 1_000L, 2_000L, "其他字幕"),
+                    LrcSentence(2, 2_000L, 3_000L, "匹配第二句")
+                )
+            )
+        )
+        var copiedText = ""
+        setPlayerContent(
+            uiState = matchingState,
+            onCopySubtitleText = { copiedText = it }
+        )
+
+        composeRule.onNodeWithContentDescription("搜索字幕").performClick()
+        composeRule.onNodeWithTag("subtitle_search_field").performTextInput("匹配")
+        composeRule.onNodeWithTag("subtitle_row_0").performTouchInput { longClick() }
+        composeRule.onNodeWithContentDescription("全选字幕").performClick()
+        composeRule.onNodeWithText("已选择 2 条").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("复制字幕").performClick()
+
+        composeRule.runOnIdle {
+            assertEquals("匹配第一句\n匹配第二句", copiedText)
+        }
+        composeRule.onNodeWithTag("subtitle_search_field").assertIsDisplayed()
+        composeRule.onNodeWithText("2 条").assertIsDisplayed()
+        composeRule.onNodeWithText("其他字幕").assertDoesNotExist()
+    }
+
+    @Test
+    fun closeBackAudioChangeAndSubtitleHidingExitSelection() {
+        val state = mutableStateOf(playingState())
+        composeRule.setContent {
+            ShadowPlayerTheme(dynamicColor = false) {
+                TestPlayerContent(state.value)
+            }
+        }
+
+        composeRule.onNodeWithTag("subtitle_row_0").performTouchInput { longClick() }
+        composeRule.onNodeWithContentDescription("退出多选").performClick()
+        composeRule.onNodeWithTag("subtitle_selection_top_bar").assertDoesNotExist()
+
+        composeRule.onNodeWithTag("subtitle_row_0").performTouchInput { longClick() }
+        pressBack()
+        composeRule.onNodeWithTag("subtitle_selection_top_bar").assertDoesNotExist()
+
+        composeRule.onNodeWithTag("subtitle_row_0").performTouchInput { longClick() }
+        composeRule.runOnIdle {
+            state.value = state.value.copy(audioId = 8L)
+        }
+        composeRule.onNodeWithTag("subtitle_selection_top_bar").assertDoesNotExist()
+
+        composeRule.onNodeWithTag("subtitle_row_0").performTouchInput { longClick() }
+        composeRule.runOnIdle {
+            state.value = state.value.copy(
+                settings = state.value.settings.copy(showSubtitle = false)
+            )
+        }
+        composeRule.onNodeWithTag("subtitle_selection_top_bar").assertDoesNotExist()
+    }
+
+    @Test
+    fun playbackProgressDoesNotAutoScrollWhileSelecting() {
+        val longSentenceList = (0 until 30).map { index ->
+            LrcSentence(
+                index = index,
+                startTime = index * 1_000L,
+                endTime = (index + 1) * 1_000L,
+                text = "字幕 $index"
+            )
+        }
+        val state = mutableStateOf(
+            playingState().copy(
+                playerState = playingState().playerState.copy(
+                    sentences = longSentenceList,
+                    currentIndex = 1,
+                    totalDuration = 30_000L
+                )
+            )
+        )
+        composeRule.setContent {
+            ShadowPlayerTheme(dynamicColor = false) {
+                Box(Modifier.size(width = 360.dp, height = 560.dp)) {
+                    TestPlayerContent(state.value)
+                }
+            }
+        }
+
+        composeRule.onNodeWithTag("subtitle_row_1").performTouchInput { longClick() }
+        composeRule.runOnIdle {
+            state.value = state.value.copy(
+                playerState = state.value.playerState.copy(currentIndex = 25)
+            )
+        }
+
+        composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
+        composeRule.onNodeWithTag("subtitle_row_25").assertDoesNotExist()
     }
 
     @Test
@@ -159,11 +347,12 @@ class PlayerScreenUiTest {
 
     private fun setPlayerContent(
         uiState: PlayerScreenUiState,
-        onSentenceClick: (Int) -> Unit = {}
+        onSentenceClick: (Int) -> Unit = {},
+        onCopySubtitleText: (String) -> Unit = {}
     ) {
         composeRule.setContent {
             ShadowPlayerTheme(dynamicColor = false) {
-                TestPlayerContent(uiState, onSentenceClick)
+                TestPlayerContent(uiState, onSentenceClick, onCopySubtitleText)
             }
         }
     }
@@ -171,12 +360,14 @@ class PlayerScreenUiTest {
     @Composable
     private fun TestPlayerContent(
         uiState: PlayerScreenUiState,
-        onSentenceClick: (Int) -> Unit = {}
+        onSentenceClick: (Int) -> Unit = {},
+        onCopySubtitleText: (String) -> Unit = {}
     ) {
         PlayerScreenContent(
             uiState = uiState,
             onShowOutputSwitcher = {},
             onSentenceClick = onSentenceClick,
+            onCopySubtitleText = onCopySubtitleText,
             onSeek = {},
             onPlayPause = {},
             onPreviousSentence = {},
