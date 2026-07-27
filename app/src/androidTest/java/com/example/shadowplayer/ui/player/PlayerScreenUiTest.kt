@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -91,14 +92,16 @@ class PlayerScreenUiTest {
         composeRule.runOnIdle { assertEquals(1, clickedIndex) }
         clickedIndex = -1
 
-        composeRule.onNodeWithTag("subtitle_row_0").performTouchInput { longClick() }
+        composeRule.onNodeWithTag("subtitle_row_1").performTouchInput { longClick() }
         composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
-        composeRule.onNodeWithTag("subtitle_checkbox_0").assertIsDisplayed()
+        composeRule
+            .onNodeWithTag("subtitle_checkbox_1", useUnmergedTree = true)
+            .assertIsDisplayed()
         composeRule.runOnIdle { assertEquals(-1, clickedIndex) }
 
-        composeRule.onNodeWithTag("subtitle_checkbox_2").performTouchInput { click() }
+        composeRule.onNodeWithTag("subtitle_row_2").performClick()
         composeRule.onNodeWithText("已选择 2 条").assertIsDisplayed()
-        composeRule.onNodeWithTag("subtitle_checkbox_0").performTouchInput { click() }
+        composeRule.onNodeWithTag("subtitle_row_1").performClick()
         composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
         composeRule.runOnIdle { assertEquals(-1, clickedIndex) }
 
@@ -107,7 +110,7 @@ class PlayerScreenUiTest {
         composeRule.onNodeWithContentDescription("复制字幕").assertIsNotEnabled()
         composeRule.runOnIdle { assertEquals(-1, clickedIndex) }
 
-        composeRule.onNodeWithTag("subtitle_row_0").performClick()
+        composeRule.onNodeWithTag("subtitle_row_1").performClick()
         composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
         composeRule.runOnIdle { assertEquals(-1, clickedIndex) }
 
@@ -116,6 +119,77 @@ class PlayerScreenUiTest {
 
         composeRule.onNodeWithTag("subtitle_row_2").performClick()
         composeRule.runOnIdle { assertEquals(2, clickedIndex) }
+    }
+
+    @Test
+    fun physicalTouchesAcrossRowRegionsNeverSeekWhileSelecting() {
+        val clickedIndices = mutableListOf<Int>()
+        setPlayerContent(
+            uiState = playingState(),
+            onSentenceClick = clickedIndices::add
+        )
+
+        tapRowAt("subtitle_row_1", xFraction = 0.75f)
+        composeRule.runOnIdle {
+            assertEquals(listOf(1), clickedIndices)
+            clickedIndices.clear()
+        }
+
+        composeRule.onNodeWithTag("subtitle_row_1").performTouchInput { longClick() }
+        composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
+
+        tapRowAt("subtitle_row_2", xFraction = 0.75f)
+        composeRule.onNodeWithText("已选择 2 条").assertIsDisplayed()
+
+        tapRowAt("subtitle_row_2", xFraction = 0.25f)
+        composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
+
+        tapRowAt("subtitle_row_2", xFraction = 0.05f)
+        composeRule.onNodeWithText("已选择 2 条").assertIsDisplayed()
+
+        composeRule.runOnIdle {
+            assertTrue(clickedIndices.isEmpty())
+        }
+    }
+
+    @Test
+    fun selectionRemainsExclusiveAfterDelayPauseAndRepeatedPhysicalTouches() {
+        val state = mutableStateOf(playingState())
+        val clickedIndices = mutableListOf<Int>()
+        composeRule.setContent {
+            ShadowPlayerTheme(dynamicColor = false) {
+                TestPlayerContent(
+                    uiState = state.value,
+                    onSentenceClick = clickedIndices::add
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("subtitle_row_0").performTouchInput { longClick() }
+        composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
+        composeRule.mainClock.advanceTimeBy(3_000L)
+
+        composeRule.runOnIdle {
+            state.value = state.value.copy(
+                playerState = state.value.playerState.copy(
+                    currentIndex = 2,
+                    currentPosition = 6_000L,
+                    isPlaying = false
+                )
+            )
+        }
+
+        repeat(10) {
+            tapRowAt("subtitle_row_1", xFraction = 0.75f)
+            tapRowAt("subtitle_row_1", xFraction = 0.05f)
+        }
+        composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
+
+        tapRowAt("subtitle_row_1", xFraction = 0.25f)
+        composeRule.onNodeWithText("已选择 2 条").assertIsDisplayed()
+        composeRule.runOnIdle {
+            assertTrue(clickedIndices.isEmpty())
+        }
     }
 
     @Test
@@ -138,7 +212,9 @@ class PlayerScreenUiTest {
         }
 
         composeRule.onNodeWithText("已选择 1 条").assertIsDisplayed()
-        composeRule.onNodeWithTag("subtitle_checkbox_0").assertIsDisplayed()
+        composeRule
+            .onNodeWithTag("subtitle_checkbox_1", useUnmergedTree = true)
+            .assertIsDisplayed()
     }
 
     @Test
@@ -344,6 +420,17 @@ class PlayerScreenUiTest {
         .fetchSemanticsNode()
         .boundsInRoot
         .height
+
+    private fun tapRowAt(tag: String, xFraction: Float) {
+        composeRule.onNodeWithTag(tag).performTouchInput {
+            click(
+                position = Offset(
+                    x = width * xFraction,
+                    y = height / 2f
+                )
+            )
+        }
+    }
 
     private fun setPlayerContent(
         uiState: PlayerScreenUiState,

@@ -149,6 +149,10 @@ internal data class PlayerScreenUiState(
     val canPlayNextTrack: Boolean
 )
 
+private data class SubtitleSelectionSession(
+    val selectedIndices: Set<Int>
+)
+
 @Composable
 fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel()
@@ -258,8 +262,13 @@ internal fun PlayerScreenContent(
     var subtitleSearchQuery by rememberSaveable { mutableStateOf("") }
     var subtitleSearchAudioId by rememberSaveable { mutableStateOf<Long?>(null) }
     var shouldFocusSubtitleSearch by remember { mutableStateOf(false) }
-    var isSubtitleSelectionMode by remember { mutableStateOf(false) }
-    var selectedSubtitleIndices by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var subtitleSelectionSession by remember(
+        uiState.audioId,
+        uiState.settings.showSubtitle,
+        uiState.playerState.sentences.isNotEmpty()
+    ) {
+        mutableStateOf<SubtitleSelectionSession?>(null)
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
@@ -270,25 +279,27 @@ internal fun PlayerScreenContent(
             isSubtitleSearchOpen = false
             subtitleSearchQuery = ""
             shouldFocusSubtitleSearch = false
-            isSubtitleSelectionMode = false
-            selectedSubtitleIndices = emptySet()
             subtitleSearchAudioId = uiState.audioId
         }
     }
 
     LaunchedEffect(uiState.settings.showSubtitle, uiState.playerState.sentences.size) {
         if (!uiState.settings.showSubtitle || uiState.playerState.sentences.isEmpty()) {
-            isSubtitleSelectionMode = false
-            selectedSubtitleIndices = emptySet()
             isSubtitleSearchOpen = false
             subtitleSearchQuery = ""
             shouldFocusSubtitleSearch = false
         } else {
-            selectedSubtitleIndices = selectedSubtitleIndices
-                .filterTo(linkedSetOf()) { it in uiState.playerState.sentences.indices }
+            subtitleSelectionSession = subtitleSelectionSession?.let { session ->
+                session.copy(
+                    selectedIndices = session.selectedIndices
+                        .filterTo(linkedSetOf()) { it in uiState.playerState.sentences.indices }
+                )
+            }
         }
     }
 
+    val isSubtitleSelectionMode = subtitleSelectionSession != null
+    val selectedSubtitleIndices = subtitleSelectionSession?.selectedIndices.orEmpty()
     val displayPosition = if (isDragging) dragPosition else uiState.playerState.currentPosition
     val targetIndex = if (isDragging && uiState.playerState.sentences.isNotEmpty()) {
         LrcParser.findSentenceIndex(uiState.playerState.sentences, dragPosition)
@@ -303,28 +314,25 @@ internal fun PlayerScreenContent(
         uiState.playerState.sentences.isNotEmpty()
 
     fun exitSubtitleSelection() {
-        isSubtitleSelectionMode = false
-        selectedSubtitleIndices = emptySet()
+        subtitleSelectionSession = null
     }
 
     fun enterSubtitleSelection(index: Int) {
         shouldFocusSubtitleSearch = false
         keyboardController?.hide()
         focusManager.clearFocus()
-        isSubtitleSelectionMode = true
-        selectedSubtitleIndices = selectedSubtitleIndices + index
+        subtitleSelectionSession = SubtitleSelectionSession(selectedIndices = setOf(index))
     }
 
-    fun handleSubtitleClick(index: Int) {
-        if (!isSubtitleSelectionMode) {
-            onSentenceClick(index)
-            return
-        }
-
-        selectedSubtitleIndices = if (index in selectedSubtitleIndices) {
-            selectedSubtitleIndices - index
-        } else {
-            selectedSubtitleIndices + index
+    fun toggleSubtitleSelection(index: Int) {
+        subtitleSelectionSession = subtitleSelectionSession?.let { session ->
+            session.copy(
+                selectedIndices = if (index in session.selectedIndices) {
+                    session.selectedIndices - index
+                } else {
+                    session.selectedIndices + index
+                }
+            )
         }
     }
 
@@ -363,8 +371,10 @@ internal fun PlayerScreenContent(
                 },
                 onExitSelection = ::exitSubtitleSelection,
                 onSelectAll = {
-                    selectedSubtitleIndices = subtitleItems
-                        .mapTo(linkedSetOf()) { it.originalIndex }
+                    subtitleSelectionSession = subtitleSelectionSession?.copy(
+                        selectedIndices = subtitleItems
+                            .mapTo(linkedSetOf()) { it.originalIndex }
+                    )
                 },
                 onCopySelection = {
                     val selectedCount = selectedSubtitleIndices.size
@@ -401,7 +411,8 @@ internal fun PlayerScreenContent(
                 selectedIndices = selectedSubtitleIndices,
                 isInInterval = uiState.playerState.isInInterval,
                 intervalCountdown = uiState.playerState.intervalCountdown,
-                onSentenceClick = ::handleSubtitleClick,
+                onSentenceClick = onSentenceClick,
+                onToggleSentenceSelection = ::toggleSubtitleSelection,
                 onSentenceLongClick = ::enterSubtitleSelection,
                 onShowSubtitle = onToggleSubtitle,
                 modifier = Modifier
@@ -628,6 +639,7 @@ private fun SubtitleArea(
     isInInterval: Boolean,
     intervalCountdown: Int,
     onSentenceClick: (Int) -> Unit,
+    onToggleSentenceSelection: (Int) -> Unit,
     onSentenceLongClick: (Int) -> Unit,
     onShowSubtitle: () -> Unit,
     modifier: Modifier = Modifier
@@ -663,6 +675,7 @@ private fun SubtitleArea(
                 isSelectionMode = isSelectionMode,
                 selectedIndices = selectedIndices,
                 onSentenceClick = onSentenceClick,
+                onToggleSentenceSelection = onToggleSentenceSelection,
                 onSentenceLongClick = onSentenceLongClick,
                 modifier = Modifier.fillMaxSize()
             )
@@ -721,6 +734,7 @@ private fun SubtitleEmptyState(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SubtitleList(
     subtitleItems: List<SubtitleListItem>,
@@ -729,10 +743,12 @@ private fun SubtitleList(
     isSelectionMode: Boolean,
     selectedIndices: Set<Int>,
     onSentenceClick: (Int) -> Unit,
+    onToggleSentenceSelection: (Int) -> Unit,
     onSentenceLongClick: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
+    val hapticFeedback = LocalHapticFeedback.current
     val visibleCurrentIndex = subtitleItems.indexOfFirst { it.originalIndex == currentIndex }
 
     LaunchedEffect(visibleCurrentIndex, subtitleItems, isSelectionMode) {
@@ -764,20 +780,31 @@ private fun SubtitleList(
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         items(items = subtitleItems, key = { it.originalIndex }) { item ->
+            val interactionModifier = if (isSelectionMode) {
+                Modifier.clickable {
+                    onToggleSentenceSelection(item.originalIndex)
+                }
+            } else {
+                Modifier.combinedClickable(
+                    onClick = { onSentenceClick(item.originalIndex) },
+                    onLongClick = {
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onSentenceLongClick(item.originalIndex)
+                    }
+                )
+            }
             SubtitleRow(
                 item = item,
                 isCurrentSentence = item.originalIndex == currentIndex,
                 isSelectionMode = isSelectionMode,
                 isSelected = item.originalIndex in selectedIndices,
                 searchQuery = searchQuery,
-                onClick = { onSentenceClick(item.originalIndex) },
-                onLongClick = { onSentenceLongClick(item.originalIndex) }
+                interactionModifier = interactionModifier
             )
         }
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SubtitleRow(
     item: SubtitleListItem,
@@ -785,10 +812,8 @@ private fun SubtitleRow(
     isSelectionMode: Boolean,
     isSelected: Boolean,
     searchQuery: String,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit
+    interactionModifier: Modifier
 ) {
-    val hapticFeedback = LocalHapticFeedback.current
     val backgroundColor = when {
         isSelected -> MaterialTheme.colorScheme.secondaryContainer
         isCurrentSentence -> MaterialTheme.colorScheme.primaryContainer
@@ -812,13 +837,7 @@ private fun SubtitleRow(
             .testTag("subtitle_row_${item.originalIndex}")
             .clip(RoundedCornerShape(12.dp))
             .background(backgroundColor)
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = {
-                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongClick()
-                }
-            )
+            .then(interactionModifier)
             .padding(vertical = if (isCurrentSentence) 12.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
