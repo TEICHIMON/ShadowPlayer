@@ -30,6 +30,8 @@ class SentencePlayer @Inject constructor(
         private const val SEEK_PRE_ROLL_MS = 200L
         // [新增] 用户主动 seek 后的意图保护窗口，防止轮询把 index 回拉到上一句
         private const val USER_INTENT_PROTECTION_MS = 500L
+        // 同步状态时，位置略超过句尾仍算当前句：句末检测是 50ms 轮询，倍速或卡顿会让暂停位置越过句尾
+        private const val SYNC_END_TOLERANCE_MS = 500L
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -163,9 +165,16 @@ class SentencePlayer @Inject constructor(
         val state = _state.value
         val position = snapshot.currentPosition
         val duration = if (snapshot.duration > 0) snapshot.duration else state.totalDuration
+        // 位置仍在当前句范围内（含跳句前导和句尾余量）就保留当前句，
+        // 否则跳句后切出去再回来，前导位置会被误判成上一句
         val newIndex = if (!isSeeking && state.sentences.isNotEmpty()) {
-            LrcParser.findSentenceIndex(state.sentences, position)
-                .takeIf { it >= 0 && it < state.sentences.size }
+            LrcParser.resolveSentenceIndex(
+                sentences = state.sentences,
+                position = position,
+                currentIndex = state.currentIndex,
+                preRollMs = SEEK_PRE_ROLL_MS,
+                endToleranceMs = SYNC_END_TOLERANCE_MS
+            ).takeIf { it >= 0 && it < state.sentences.size }
                 ?: state.currentIndex
         } else {
             state.currentIndex
@@ -261,7 +270,8 @@ class SentencePlayer @Inject constructor(
         }
 
         val startIndex = if (sentences.isNotEmpty() && initialPosition > 0) {
-            LrcParser.findSentenceIndex(sentences, initialPosition)
+            // 保存的进度可能是跳句时的前导位置，应恢复到后一句
+            LrcParser.findSentenceIndexWithPreRoll(sentences, initialPosition, SEEK_PRE_ROLL_MS)
         } else {
             0
         }
@@ -771,7 +781,13 @@ class SentencePlayer @Inject constructor(
         if (isSeeking) return
 
         val currentPosition = audioPlayer.getCurrentPosition()
-        val newIndex = LrcParser.findSentenceIndex(state.sentences, currentPosition)
+        // 跳句前导期间位置还在上一句范围内，保持当前句
+        val newIndex = LrcParser.resolveSentenceIndex(
+            sentences = state.sentences,
+            position = currentPosition,
+            currentIndex = state.currentIndex,
+            preRollMs = SEEK_PRE_ROLL_MS
+        )
 
         if (newIndex < 0) return
         if (newIndex == state.currentIndex) return

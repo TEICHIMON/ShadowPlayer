@@ -92,4 +92,35 @@ object LrcParser {
         }
         return 0
     }
+
+    /**
+     * 从保存的播放位置恢复句子索引。
+     * 跳句时会从句首往前多 seek [preRollMs]，这段前导位置属于后一句，而不是上一句。
+     */
+    fun findSentenceIndexWithPreRoll(
+        sentences: List<LrcSentence>,
+        position: Long,
+        preRollMs: Long
+    ): Int = findSentenceIndex(sentences, position + preRollMs)
+
+    /**
+     * 根据播放位置确定当前句：位置仍落在当前句范围内时保留 [currentIndex]，超出范围才按位置重新查找。
+     * 范围向前扩展 [preRollMs]（跳句前导），向后扩展 [endToleranceMs]（句末检测的轮询延迟）。
+     */
+    fun resolveSentenceIndex(
+        sentences: List<LrcSentence>,
+        position: Long,
+        currentIndex: Int,
+        preRollMs: Long,
+        endToleranceMs: Long = 0L
+    ): Int {
+        val current = sentences.getOrNull(currentIndex)
+        if (current != null &&
+            position >= current.startTime - preRollMs &&
+            position < current.endTime + endToleranceMs
+        ) {
+            return currentIndex
+        }
+        return findSentenceIndex(sentences, position)
+    }
 }
