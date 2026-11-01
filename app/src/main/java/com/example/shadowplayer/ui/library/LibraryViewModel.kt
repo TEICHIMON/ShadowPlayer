@@ -523,9 +523,19 @@ class LibraryViewModel @Inject constructor(
             }.toHashSet()
             val foundPaths = mutableSetOf<String>()
             val newAudioFiles = mutableListOf<AudioFile>()
-            docFile?.let { scanDirectoryIncremental(it, newAudioFiles, existingPaths, foundPaths) }
+            // 打不开或列出来是空的文件夹，里面的记录不删，见 pathsToDelete
+            val emptyFolders = mutableSetOf<String>()
+            if (docFile != null) {
+                scanDirectoryIncremental(docFile, newAudioFiles, existingPaths, foundPaths, emptyFolders)
+            } else {
+                emptyFolders += folderDocId
+            }
             if (newAudioFiles.isNotEmpty()) repository.insertAllIgnore(newAudioFiles)
-            val deletedPaths = existingPaths - foundPaths
+            val deletedPaths = pathsToDelete(existingPaths, foundPaths, emptyFolders)
+            val keptPaths = existingPaths.count { it !in foundPaths } - deletedPaths.size
+            if (keptPaths > 0) {
+                Log.w("LibraryViewModel", "Kept $keptPaths missing files in ${emptyFolders.size} empty folders of ${folder.name}")
+            }
             deletedPaths.forEach { repository.deleteAudioByPath(it) }
         } catch (e: Exception) {
             Log.e("LibraryViewModel", "Incremental scan failed", e)
@@ -536,11 +546,15 @@ class LibraryViewModel @Inject constructor(
         directory: DocumentFile,
         newFiles: MutableList<AudioFile>,
         existingPaths: HashSet<String>,
-        foundPaths: MutableSet<String>
+        foundPaths: MutableSet<String>,
+        emptyFolders: MutableSet<String>
     ) {
-        directory.listFiles().forEach { file ->
+        // listFiles() 出错时不抛异常，只返回空数组
+        val children = directory.listFiles()
+        if (children.isEmpty()) emptyFolders += extractDocumentId(directory.uri.toString())
+        children.forEach { file ->
             if (file.isDirectory) {
-                scanDirectoryIncremental(file, newFiles, existingPaths, foundPaths)
+                scanDirectoryIncremental(file, newFiles, existingPaths, foundPaths, emptyFolders)
             } else {
                 val fileName = file.name ?: ""
                 val filePath = file.uri.toString()
