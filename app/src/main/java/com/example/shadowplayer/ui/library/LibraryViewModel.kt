@@ -4,6 +4,9 @@ import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -68,7 +71,10 @@ class LibraryViewModel @Inject constructor(
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
-    private val _searchQuery = MutableStateFlow("")
+    // 输入框直接读写 Compose State，保证输入法同步；Flow 只用于在后台计算搜索结果
+    var searchQuery by mutableStateOf("")
+        private set
+    private val searchQueryFlow = MutableStateFlow("")
 
     private val _folderSortType = MutableStateFlow(FolderSortType.NAME_ASC)
     val folderSortType: StateFlow<FolderSortType> = _folderSortType.asStateFlow()
@@ -100,8 +106,6 @@ class LibraryViewModel @Inject constructor(
         return folderPath?.let { _fileSortByFolder.value[it] } ?: FileSortType.NAME_ASC
     }
 
-    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
-
     private val _isSelectionMode = MutableStateFlow(false)
     val isSelectionMode: StateFlow<Boolean> = _isSelectionMode.asStateFlow()
 
@@ -130,53 +134,26 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    private fun extractDocumentId(uri: String): String {
-        val docMarker = "/document/"
-        val docIndex = uri.indexOf(docMarker)
-        if (docIndex != -1) {
-            return uri.substring(docIndex + docMarker.length)
-        }
-        val treeMarker = "/tree/"
-        val treeIndex = uri.indexOf(treeMarker)
-        if (treeIndex != -1) {
-            return uri.substring(treeIndex + treeMarker.length)
-        }
-        return uri
-    }
-
     private val allAudioFiles: StateFlow<List<AudioFile>> = repository.getAllAudioFiles()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val recordGroups: StateFlow<List<FolderGroup>> = combine(
         repository.getHistory(),
-        allAudioFiles,
-        _searchQuery
-    ) { historyFiles, allFiles, query ->
+        allAudioFiles
+    ) { historyFiles, allFiles ->
+        // 每个文件只解析一次父目录，避免「文件夹数 × 文件数」次 URL 解码
+        val filesByFolder = allFiles.groupBy { getParentFolderPath(it.path) }
         val foldersWithHistory = historyFiles.map { audioFile ->
             getParentFolderPath(audioFile.path)
         }.toSet()
 
         val groups = foldersWithHistory.mapNotNull { folderPath ->
-            val folderAudioFiles = allFiles.filter { audioFile ->
-                getParentFolderPath(audioFile.path) == folderPath
-            }
-
-            if (folderAudioFiles.isEmpty()) return@mapNotNull null
-
-            val filteredFiles = if (query.isBlank()) {
-                folderAudioFiles
-            } else {
-                folderAudioFiles.filter {it.title.lowercase().contains(query.lowercase()) }
-            }
-
-            if (filteredFiles.isEmpty()) return@mapNotNull null
-
-            val sortedFiles = filteredFiles.sortedBy { it.title.lowercase() }
+            val folderAudioFiles = filesByFolder[folderPath] ?: return@mapNotNull null
 
             FolderGroup(
                 folderName = getParentFolderName(folderPath),
                 folderPath = folderPath,
-                audioFiles = sortedFiles
+                audioFiles = folderAudioFiles.sortedBy { it.title.lowercase() }
             )
         }
 
@@ -187,19 +164,11 @@ class LibraryViewModel @Inject constructor(
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    val favorites: StateFlow<List<AudioFile>> = combine(
-        repository.getFavorites(),
-        _searchQuery
-    ) { files, query ->
-        if (query.isBlank()) files else files.filter { it.title.lowercase().contains(query.lowercase()) }
-    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    val favorites: StateFlow<List<AudioFile>> = repository.getFavorites()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    val history: StateFlow<List<AudioFile>> = combine(
-        repository.getHistory(),
-        _searchQuery
-    ) { files, query ->
-        if (query.isBlank()) files else files.filter { it.title.lowercase().contains(query.lowercase()) }
-    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    val history: StateFlow<List<AudioFile>> = repository.getHistory()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val scanFolders: StateFlow<List<ScanFolder>> = repository.getAllScanFolders()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
@@ -214,36 +183,21 @@ class LibraryViewModel @Inject constructor(
         _currentFolderDocId,
         scanFolders,
         allAudioFiles,
-        _searchQuery,
         _folderSortType,
         _fileSortByFolder
-    ) { values ->
-        val currentDocId = values[0] as String?
-        val roots = values[1] as List<ScanFolder>
-        val allFiles = values[2] as List<AudioFile>
-        val query = values[3] as String
-        val folderSort = values[4] as FolderSortType
-        val fileSortMap = values[5] as Map<String, FileSortType>
-
+    ) { currentDocId, roots, allFiles, folderSort, fileSortMap ->
         val fileSort = currentDocId?.let { fileSortMap[it] } ?: FileSortType.NAME_ASC
 
         if (currentDocId == null) {
             val folders = roots.map { folder ->
                 val folderDocId = extractDocumentId(folder.path)
-                val filesInFolder = allFiles.filter { file ->
+                val audioCount = allFiles.count { file ->
                     val fileDocId = extractDocumentId(file.path)
                     fileDocId == folderDocId ||
                             fileDocId.startsWith("$folderDocId%2F") ||
                             fileDocId.startsWith("$folderDocId/")
                 }
-                val filteredCount = if (query.isBlank()) {
-                    filesInFolder.size
-                } else {
-                    filesInFolder.count { it.title.lowercase().contains(query.lowercase()) }
-                }
-                FileSystemItem.Folder(folder.name, folderDocId, filteredCount)
-            }.let { folders ->
-                if (query.isBlank()) folders else folders.filter { it.audioCount > 0 }
+                FileSystemItem.Folder(folder.name, folderDocId, audioCount)
             }
 
             when (folderSort) {
@@ -287,9 +241,7 @@ class LibraryViewModel @Inject constructor(
                                 processedSubFolders.add(subFolderDocId)
                             }
                         } else {
-                            if (query.isBlank() || file.title.lowercase().contains(query.lowercase())) {
-                                items.add(FileSystemItem.File(file))
-                            }
+                            items.add(FileSystemItem.File(file))
                         }
                     }
                 }
@@ -297,21 +249,13 @@ class LibraryViewModel @Inject constructor(
 
             processedSubFolders.forEach { subFolderDocId ->
                 val filesInSubFolder = subFolderFiles[subFolderDocId] ?: emptyList()
-                val matchingCount = if (query.isBlank()) {
-                    filesInSubFolder.size
-                } else {
-                    filesInSubFolder.count { it.title.lowercase().contains(query.lowercase()) }
+                val subFolderName = subFolderDocId.substringAfterLast("%2F").substringAfterLast("/")
+                val displayName = try {
+                    URLDecoder.decode(subFolderName, "UTF-8")
+                } catch (e: Exception) {
+                    subFolderName
                 }
-
-                if (query.isBlank() || matchingCount > 0) {
-                    val subFolderName = subFolderDocId.substringAfterLast("%2F").substringAfterLast("/")
-                    val displayName = try {
-                        URLDecoder.decode(subFolderName, "UTF-8")
-                    } catch (e: Exception) {
-                        subFolderName
-                    }
-                    items.add(FileSystemItem.Folder(displayName, subFolderDocId, matchingCount))
-                }
+                items.add(FileSystemItem.Folder(displayName, subFolderDocId, filesInSubFolder.size))
             }
 
             val folders = items.filterIsInstance<FileSystemItem.Folder>()
@@ -345,14 +289,34 @@ class LibraryViewModel @Inject constructor(
     private val _selectedTagId = MutableStateFlow<Long?>(null)
     val selectedTagId: StateFlow<Long?> = _selectedTagId.asStateFlow()
 
-    val audioFilesByTag: StateFlow<List<AudioFile>> = combine(
-        _selectedTagId.flatMapLatest { tagId ->
+    val audioFilesByTag: StateFlow<List<AudioFile>> = _selectedTagId
+        .flatMapLatest { tagId ->
             if (tagId != null) repository.getAudioFilesByTag(tagId) else repository.getAudioFilesWithAnyTag()
-        },
-        _searchQuery
-    ) { files, query ->
-        if (query.isBlank()) files else files.filter { it.title.lowercase().contains(query.lowercase()) }
-    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+        }
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    // 搜索范围是整个文件库：文件名和文件夹名都参与匹配，计算放在后台线程
+    private val searchIndex: StateFlow<LibrarySearchIndex?> = combine(
+        allAudioFiles,
+        scanFolders
+    ) { files, roots ->
+        buildLibrarySearchIndex(files, roots)
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    internal val searchResult: StateFlow<LibrarySearchResult?> = searchQueryFlow
+        .map(::searchTokens)
+        .distinctUntilChanged()
+        .flatMapLatest { tokens ->
+            if (tokens.isEmpty()) {
+                flowOf(null)
+            } else {
+                searchIndex.filterNotNull().map { index -> searchLibrary(index, tokens) }
+            }
+        }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
@@ -422,7 +386,10 @@ class LibraryViewModel @Inject constructor(
         return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
     }
 
-    fun search(query: String) { _searchQuery.value = query }
+    fun search(query: String) {
+        searchQuery = query
+        searchQueryFlow.value = query
+    }
 
     fun navigateToFolder(docId: String) { _currentFolderDocId.value = docId }
 

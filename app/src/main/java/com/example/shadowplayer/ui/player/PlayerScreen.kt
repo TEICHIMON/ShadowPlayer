@@ -12,6 +12,7 @@ import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +34,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
@@ -81,7 +85,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -105,6 +108,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -114,6 +118,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.buildAnnotatedString
@@ -549,7 +555,16 @@ private fun PlayerTopBar(
                 }
             },
             title = {
-                TextField(
+                // M3 TextField 上下各有 16dp 内边距，最少 56dp 高，放进 48dp 的标题栏会切掉文字下半部分，
+                // 所以这里用 BasicTextField 并去掉上下内边距
+                val interactionSource = remember { MutableInteractionSource() }
+                val colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent
+                )
+                BasicTextField(
                     value = searchQuery,
                     onValueChange = onSearchQueryChange,
                     modifier = Modifier
@@ -557,22 +572,33 @@ private fun PlayerTopBar(
                         .height(48.dp)
                         .focusRequester(focusRequester)
                         .testTag("subtitle_search_field"),
-                    placeholder = { Text("搜索字幕") },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = onClearSearch) {
-                                Icon(Icons.Default.Clear, contentDescription = "清空搜索")
-                            }
-                        }
-                    },
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.focusedTextColor),
+                    cursorBrush = SolidColor(colors.cursorColor),
                     singleLine = true,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent
-                    )
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
+                    interactionSource = interactionSource,
+                    decorationBox = { innerTextField ->
+                        TextFieldDefaults.DecorationBox(
+                            value = searchQuery,
+                            innerTextField = innerTextField,
+                            enabled = true,
+                            singleLine = true,
+                            visualTransformation = VisualTransformation.None,
+                            interactionSource = interactionSource,
+                            placeholder = { Text("搜索字幕") },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = onClearSearch) {
+                                        Icon(Icons.Default.Clear, contentDescription = "清空搜索")
+                                    }
+                                }
+                            },
+                            colors = colors,
+                            contentPadding = TextFieldDefaults.contentPaddingWithoutLabel(top = 0.dp, bottom = 0.dp)
+                        )
+                    }
                 )
             },
             actions = {

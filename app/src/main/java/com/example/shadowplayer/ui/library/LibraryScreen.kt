@@ -16,6 +16,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Label
@@ -27,10 +29,16 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -62,7 +70,10 @@ fun LibraryScreen(
 
     val isScanning by viewModel.isScanning.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
-    val searchQuery by viewModel.searchQuery.collectAsState()
+    val searchQuery = viewModel.searchQuery
+    val searchResult by viewModel.searchResult.collectAsState()
+    val isSearching = searchQuery.isNotBlank()
+    val focusManager = LocalFocusManager.current
     val isSelectionMode by viewModel.isSelectionMode.collectAsState()
     val selectedIds by viewModel.selectedAudioIds.collectAsState()
 
@@ -90,15 +101,21 @@ fun LibraryScreen(
         }
     }
 
-    BackHandler(enabled = isSelectionMode || showTagManager || (selectedTab == LibraryTab.FOLDERS && currentFolderPath != null)) {
+    BackHandler(enabled = isSelectionMode || showTagManager || isSearching || (selectedTab == LibraryTab.FOLDERS && currentFolderPath != null)) {
         when {
             showTagManager -> showTagManager = false
             isSelectionMode -> viewModel.exitSelectionMode()
+            isSearching -> {
+                viewModel.search("")
+                focusManager.clearFocus()
+            }
             selectedTab == LibraryTab.FOLDERS && currentFolderPath != null -> viewModel.navigateUp()
         }
     }
 
-    val currentViewList = when (selectedTab) {
+    val currentViewList = if (isSearching) {
+        searchResult?.audioFiles.orEmpty().map { it.audioFile }
+    } else when (selectedTab) {
         LibraryTab.RECORDS -> recordGroups.flatMap { it.audioFiles }
         LibraryTab.FAVORITES -> favorites
         LibraryTab.HISTORY -> history
@@ -154,29 +171,52 @@ fun LibraryScreen(
                         value = searchQuery,
                         onValueChange = { viewModel.search(it) },
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                        placeholder = { Text("搜索音频...") },
+                        placeholder = { Text("搜索音频或文件夹...") },
                         leadingIcon = { Icon(Icons.Default.Search, null) },
-                        trailingIcon = { if (searchQuery.isNotEmpty()) IconButton(onClick = { viewModel.search("") }) { Icon(Icons.Default.Close, null) } },
+                        trailingIcon = { if (searchQuery.isNotEmpty()) IconButton(onClick = { viewModel.search("") }) { Icon(Icons.Default.Close, contentDescription = "清空搜索") } },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
                         shape = MaterialTheme.shapes.medium
                     )
 
-                    ScrollableTabRow(
-                        selectedTabIndex = selectedTab.ordinal,
-                        modifier = Modifier.fillMaxWidth(),
-                        edgePadding = 16.dp
-                    ) {
-                        Tab(selected = selectedTab == LibraryTab.RECORDS, onClick = { selectedTab = LibraryTab.RECORDS }, text = { Text("记录") })
-                        Tab(selected = selectedTab == LibraryTab.FAVORITES, onClick = { selectedTab = LibraryTab.FAVORITES }, text = { Text("收藏") })
-                        Tab(selected = selectedTab == LibraryTab.HISTORY, onClick = { selectedTab = LibraryTab.HISTORY }, text = { Text("历史") })
-                        Tab(selected = selectedTab == LibraryTab.TAGS, onClick = { selectedTab = LibraryTab.TAGS }, text = { Text("标签") })
-                        Tab(selected = selectedTab == LibraryTab.FOLDERS, onClick = { selectedTab = LibraryTab.FOLDERS }, text = { Text("文件夹") })
+                    // 搜索时显示全库结果，标签页暂时隐藏
+                    if (!isSearching) {
+                        ScrollableTabRow(
+                            selectedTabIndex = selectedTab.ordinal,
+                            modifier = Modifier.fillMaxWidth(),
+                            edgePadding = 16.dp
+                        ) {
+                            Tab(selected = selectedTab == LibraryTab.RECORDS, onClick = { selectedTab = LibraryTab.RECORDS }, text = { Text("记录") })
+                            Tab(selected = selectedTab == LibraryTab.FAVORITES, onClick = { selectedTab = LibraryTab.FAVORITES }, text = { Text("收藏") })
+                            Tab(selected = selectedTab == LibraryTab.HISTORY, onClick = { selectedTab = LibraryTab.HISTORY }, text = { Text("历史") })
+                            Tab(selected = selectedTab == LibraryTab.TAGS, onClick = { selectedTab = LibraryTab.TAGS }, text = { Text("标签") })
+                            Tab(selected = selectedTab == LibraryTab.FOLDERS, onClick = { selectedTab = LibraryTab.FOLDERS }, text = { Text("文件夹") })
+                        }
                     }
                 }
 
                 if (isScanning) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
 
-                when (selectedTab) {
+                if (isSearching) {
+                    LibrarySearchSection(
+                        query = searchQuery.trim(),
+                        result = searchResult,
+                        currentPlayingAudioId = currentPlayingAudioId,
+                        isSelectionMode = isSelectionMode,
+                        selectedIds = selectedIds,
+                        onFolderClick = { folder ->
+                            focusManager.clearFocus()
+                            viewModel.search("")
+                            selectedTab = LibraryTab.FOLDERS
+                            viewModel.navigateToFolder(folder.docId)
+                        },
+                        onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else handleFileSelected(it) },
+                        onFileLongClick = { viewModel.showAudioDetails(it) },
+                        onFavoriteClick = { viewModel.toggleFavorite(it) },
+                        onAddTagClick = { showAddToTagDialog = it }
+                    )
+                } else when (selectedTab) {
                     LibraryTab.RECORDS -> {
                         RecordsGroupedSection(
                             groups = recordGroups,
@@ -594,7 +634,9 @@ fun CompactAudioFileItem(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onFavoriteClick: () -> Unit,
-    onAddTagClick: () -> Unit
+    onAddTagClick: () -> Unit,
+    folderLabel: String? = null,
+    highlightTokens: List<String> = emptyList()
 ) {
     val haptic = LocalHapticFeedback.current
 
@@ -647,12 +689,25 @@ fun CompactAudioFileItem(
         Column(modifier = Modifier.weight(1f)) {
             // 标题完整换行显示，便于一眼找到目标音频
             Text(
-                text = audioFile.title,
+                text = highlightSearchMatches(
+                    text = audioFile.title,
+                    tokens = highlightTokens,
+                    highlightColor = MaterialTheme.colorScheme.tertiaryContainer
+                ),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Normal,
                 color = if (isCurrentlyPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.fillMaxWidth()
             )
+            if (folderLabel != null) {
+                Text(
+                    text = folderLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             Row {
                 if (audioFile.lrcPath != null) {
                     Text(
@@ -685,6 +740,162 @@ fun CompactAudioFileItem(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun LibrarySearchSection(
+    query: String,
+    result: LibrarySearchResult?,
+    currentPlayingAudioId: Long,
+    isSelectionMode: Boolean,
+    selectedIds: Set<Long>,
+    onFolderClick: (SearchableFolder) -> Unit,
+    onFileClick: (AudioFile) -> Unit,
+    onFileLongClick: (AudioFile) -> Unit,
+    onFavoriteClick: (AudioFile) -> Unit,
+    onAddTagClick: (AudioFile) -> Unit
+) {
+    // 结果还没算出来时先留空，避免闪一下「没有找到」
+    if (result == null) return
+
+    if (result.isEmpty) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    Icons.Default.SearchOff,
+                    contentDescription = null,
+                    modifier = Modifier.size(64.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "没有找到「$query」",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "可以搜索文件名或文件夹名，多个关键词用空格分开",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+            }
+        }
+        return
+    }
+
+    val listState = rememberLazyListState()
+    // 关键词变化后回到顶部，先看到最新的结果
+    LaunchedEffect(result.tokens) { listState.scrollToItem(0) }
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 16.dp)
+    ) {
+        if (result.folders.isNotEmpty()) {
+            item(key = "folders_header") { SearchSectionHeader("文件夹", result.folders.size) }
+            items(result.folders, key = { "folder:${it.docId}" }) { folder ->
+                SearchFolderItem(
+                    folder = folder,
+                    highlightTokens = result.tokens,
+                    onClick = { onFolderClick(folder) }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+            }
+        }
+        if (result.audioFiles.isNotEmpty()) {
+            item(key = "audio_header") { SearchSectionHeader("音频", result.audioFiles.size) }
+            items(result.audioFiles, key = { "audio:${it.audioFile.id}" }) { item ->
+                CompactAudioFileItem(
+                    audioFile = item.audioFile,
+                    isCurrentlyPlaying = item.audioFile.id == currentPlayingAudioId,
+                    isSelectionMode = isSelectionMode,
+                    isSelected = selectedIds.contains(item.audioFile.id),
+                    onClick = { onFileClick(item.audioFile) },
+                    onLongClick = { onFileLongClick(item.audioFile) },
+                    onFavoriteClick = { onFavoriteClick(item.audioFile) },
+                    onAddTagClick = { onAddTagClick(item.audioFile) },
+                    folderLabel = item.folderLabel,
+                    highlightTokens = result.tokens
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchSectionHeader(title: String, count: Int) {
+    Text(
+        text = "$title · $count",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp)
+    )
+}
+
+@Composable
+private fun SearchFolderItem(
+    folder: SearchableFolder,
+    highlightTokens: List<String>,
+    onClick: () -> Unit
+) {
+    ListItem(
+        headlineContent = {
+            Text(
+                text = highlightSearchMatches(
+                    text = folder.name,
+                    tokens = highlightTokens,
+                    highlightColor = MaterialTheme.colorScheme.tertiaryContainer
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        supportingContent = {
+            Text(
+                text = listOf("${folder.audioCount} 首音频", folder.parentLabel)
+                    .filter { it.isNotEmpty() }
+                    .joinToString(" · "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        leadingContent = {
+            Icon(
+                Icons.Default.Folder,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.secondary
+            )
+        },
+        trailingContent = {
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = "进入",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        modifier = Modifier.clickable(onClick = onClick)
+    )
+}
+
+private fun highlightSearchMatches(
+    text: String,
+    tokens: List<String>,
+    highlightColor: Color
+): AnnotatedString = buildAnnotatedString {
+    append(text)
+    findSearchMatchRanges(text, tokens).forEach { range ->
+        addStyle(
+            style = SpanStyle(background = highlightColor),
+            start = range.first,
+            end = range.last + 1
+        )
     }
 }
 
