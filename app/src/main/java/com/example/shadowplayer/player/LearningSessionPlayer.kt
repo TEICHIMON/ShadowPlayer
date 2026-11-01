@@ -80,6 +80,9 @@ internal class LearningSessionPlayer(
         }
     }
 
+    // 播到结尾后从通知栏或耳机按播放，Media3 会先调用这里回到开头，要经过句子逻辑，否则当前句不会重置
+    override fun seekToDefaultPosition() = commands.seekTo(0L)
+
     override fun seekBack() = commands.seekBackward()
 
     override fun seekForward() = commands.seekForward()

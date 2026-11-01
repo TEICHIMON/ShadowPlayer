@@ -61,8 +61,6 @@ class AudioPlayer @Inject constructor(
     // 供 SentencePlayer 监听位置变化
     var onPositionChanged: ((Long) -> Unit)? = null
     var onPlaybackEnded: (() -> Unit)? = null
-    // [新增] seek 真正完成的回调，用于精准清除 isSeeking 标志
-    var onSeekCompleted: (() -> Unit)? = null
     var onExternalPause: (() -> Unit)? = null
 
     /**
@@ -126,7 +124,6 @@ class AudioPlayer @Inject constructor(
                             reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT
                         ) {
                             _currentPosition.value = newPosition.positionMs
-                            onSeekCompleted?.invoke()
                         }
                     }
                 })
@@ -216,6 +213,10 @@ class AudioPlayer @Inject constructor(
 
     fun hasMedia(): Boolean {
         return getSnapshot().hasMedia
+    }
+
+    fun isEnded(): Boolean {
+        return exoPlayer?.playbackState == Player.STATE_ENDED
     }
 
     fun getSnapshot(): AudioPlayerSnapshot {

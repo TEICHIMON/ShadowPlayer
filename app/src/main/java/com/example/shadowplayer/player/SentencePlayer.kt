@@ -61,9 +61,6 @@ class SentencePlayer @Inject constructor(
     private val _currentAudioId = MutableStateFlow(-1L)
     val currentAudioId: StateFlow<Long> = _currentAudioId.asStateFlow()
 
-    // [关键修复] 增加 seeking 标志位，防止 seekTo 触发的回调导致逻辑重入或死循环
-    private var isSeeking = false
-
     // [新增] 用户意图保护：记录最近一次用户主动 seek 的目标 index 和时间戳
     private var userIntendedIndex: Int = -1
     private var userIntendTimestamp: Long = 0L
@@ -75,17 +72,12 @@ class SentencePlayer @Inject constructor(
             checkSentenceEnd(position)
         }
 
-        // [新增] seek 真正完成时才清除 isSeeking 标志
-        audioPlayer.onSeekCompleted = {
-            isSeeking = false
-        }
-
         audioPlayer.onExternalPause = {
             handleExternalPause()
         }
 
         audioPlayer.onPlaybackEnded = {
-            handleExternalPause()
+            handlePlaybackEnded()
         }
 
         scope.launch {
@@ -167,7 +159,7 @@ class SentencePlayer @Inject constructor(
         val duration = if (snapshot.duration > 0) snapshot.duration else state.totalDuration
         // 位置仍在当前句范围内（含跳句前导和句尾余量）就保留当前句，
         // 否则跳句后切出去再回来，前导位置会被误判成上一句
-        val newIndex = if (!isSeeking && state.sentences.isNotEmpty()) {
+        val newIndex = if (state.sentences.isNotEmpty()) {
             LrcParser.resolveSentenceIndex(
                 sentences = state.sentences,
                 position = position,
@@ -245,6 +237,8 @@ class SentencePlayer @Inject constructor(
         initialPosition: Long = 0L
     ) {
         saveCurrentPosition()
+        // 间隔倒计时中换音频，倒计时结束后会去播放新音频
+        cancelInterval()
 
         _state.value = SentencePlayerState()
         pendingLrcContent = lrcContent
@@ -287,7 +281,7 @@ class SentencePlayer @Inject constructor(
         )
 
         if (initialPosition > 0) {
-            safeSeekTo(initialPosition)
+            audioPlayer.seekTo(initialPosition)
         }
     }
 
@@ -318,6 +312,11 @@ class SentencePlayer @Inject constructor(
     fun play() {
         if (!audioPlayer.hasMedia()) return
         cancelInterval()
+        // 播放器停在结尾（STATE_ENDED）时直接 play() 不会出声，先回到开头
+        if (audioPlayer.isEnded()) {
+            _state.value = _state.value.copy(currentIndex = 0, currentRepeat = 1, currentPosition = 0L)
+            audioPlayer.seekTo(0L)
+        }
         audioPlayer.setSpeed(_settings.value.speed)
         audioPlayer.play()
         _state.value = _state.value.copy(
@@ -340,6 +339,24 @@ class SentencePlayer @Inject constructor(
      */
     fun handleExternalPause() {
         settlePausedState()
+    }
+
+    /**
+     * 播放器播到了音频结尾（STATE_ENDED）。最后一句的句尾就是音频结尾，
+     * 50ms 一次的句末检测来不及看到 position >= endTime 就停了，
+     * 所以这里补做一次句末处理，否则最后一句的重复和跟读间隔会被跳过。
+     */
+    private fun handlePlaybackEnded() {
+        val state = _state.value
+        // 轮询偶尔会比 STATE_ENDED 早几毫秒看到句尾，已经进入跟读间隔；
+        // 播放器缓冲已播完，暂停后仍会报告结尾。这时不能当成外部暂停，否则会取消刚开始的间隔
+        if (state.isInInterval) return
+        if (!state.isPlaying || state.currentSentence == null || isContinuousPlaybackMode()) {
+            handleExternalPause()
+            return
+        }
+        _state.value = state.copy(currentPosition = audioPlayer.getCurrentPosition())
+        handleSentenceEnd()
     }
 
     private fun settlePausedState() {
@@ -365,8 +382,6 @@ class SentencePlayer @Inject constructor(
         cancelInterval()
         val sentence = sentences[index]
 
-        // [修复] 标记 seeking，等 onSeekCompleted 回调清除（不再立即复位）
-        isSeeking = true
         // [新增] 记录用户意图
         userIntendedIndex = index
         userIntendTimestamp = System.currentTimeMillis()
@@ -380,8 +395,6 @@ class SentencePlayer @Inject constructor(
 
         val seekTarget = maxOf(0L, sentence.startTime - SEEK_PRE_ROLL_MS)
         audioPlayer.seekTo(seekTarget)
-
-        // [删除] 原来的 isSeeking = false 这行去掉
 
         saveCurrentPosition()
         if (_state.value.isPlaying) play()
@@ -406,8 +419,6 @@ class SentencePlayer @Inject constructor(
     fun seekTo(position: Long) {
         val newIndex = LrcParser.findSentenceIndex(_state.value.sentences, position)
 
-        // [修复] 延长 isSeeking 生命周期
-        isSeeking = true
         // [新增] 记录用户意图
         if (newIndex >= 0) {
             userIntendedIndex = newIndex
@@ -420,14 +431,6 @@ class SentencePlayer @Inject constructor(
             currentRepeat = 1
         )
         audioPlayer.seekTo(position)
-        // [删除] 原来的 isSeeking = false 去掉
-    }
-
-    // 内部使用的安全 seek 方法
-    private fun safeSeekTo(position: Long) {
-        isSeeking = true
-        audioPlayer.seekTo(position)
-        // [删除] 原来的 isSeeking = false 去掉
     }
 
     fun seekForward() {
@@ -588,11 +591,13 @@ class SentencePlayer @Inject constructor(
 
     private fun checkSentenceEnd(position: Long) {
         val state = _state.value
-        // [重要修复] 如果正在 seek 或处于间隔中，直接忽略回调，防止逻辑冲突
-        if (state.isInInterval || isSeeking) return
+        if (state.isInInterval) return
 
         _state.value = state.copy(currentPosition = position)
 
+        // seekTo 会立即回调位置（播放器在 seekTo 内部同步回调），暂停时拖进度条或恢复进度也会走到这里。
+        // 这不是"播完了这一句"：只在播放中处理句末，否则会进入跟读间隔，倒计时结束后自动播放。
+        if (!state.isPlaying) return
         val currentSentence = state.currentSentence ?: return
 
         if (position >= currentSentence.endTime) {
@@ -737,8 +742,6 @@ class SentencePlayer @Inject constructor(
         val state = _state.value
         val sentence = state.currentSentence ?: return
 
-        // [修复] 延长 isSeeking 生命周期
-        isSeeking = true
         // [新增] 重复播放也是明确意图，保护当前 index 不被回拉
         userIntendedIndex = state.currentIndex
         userIntendTimestamp = System.currentTimeMillis()
@@ -747,8 +750,6 @@ class SentencePlayer @Inject constructor(
 
         val seekTarget = maxOf(0L, sentence.startTime - SEEK_PRE_ROLL_MS)
         audioPlayer.seekTo(seekTarget)
-
-        // [删除] 原来的 isSeeking = false 去掉
 
         audioPlayer.play()
         startPositionUpdate()
@@ -777,9 +778,6 @@ class SentencePlayer @Inject constructor(
         val state = _state.value
         if (state.sentences.isEmpty()) return
 
-        // [守卫1] seek 尚未真正完成，忽略过渡态位置读数
-        if (isSeeking) return
-
         val currentPosition = audioPlayer.getCurrentPosition()
         // 跳句前导期间位置还在上一句范围内，保持当前句
         val newIndex = LrcParser.resolveSentenceIndex(
@@ -792,7 +790,7 @@ class SentencePlayer @Inject constructor(
         if (newIndex < 0) return
         if (newIndex == state.currentIndex) return
 
-        // [守卫2] 用户意图保护窗口：不允许把 index 回拉到用户意图之前
+        // 用户意图保护窗口：不允许把 index 回拉到用户意图之前
         val now = System.currentTimeMillis()
         val inProtectionWindow = userIntendedIndex >= 0 &&
                 now - userIntendTimestamp < USER_INTENT_PROTECTION_MS
