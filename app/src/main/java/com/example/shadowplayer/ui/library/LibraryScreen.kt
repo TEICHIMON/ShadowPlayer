@@ -96,9 +96,9 @@ fun LibraryScreen(
     // 结果列表的位置放在这里：从文件夹或播放页返回结果时，列表停在原来的位置
     val searchListState = rememberLazyListState()
     var lastSearchKey by rememberSaveable { mutableStateOf("") }
-    val searchKey = searchResult?.let { "${it.tokens}|${it.filters}" }
+    val searchKey = searchResult?.let { "${it.tokens}|${it.filters}|${it.sort}" }
     LaunchedEffect(searchKey) {
-        // 关键词或过滤条件变了，回到顶部，先看到最新的结果
+        // 关键词、过滤条件或排序变了，回到顶部，先看到最新的结果
         if (searchKey != null && searchKey != lastSearchKey) {
             searchListState.scrollToItem(0)
             lastSearchKey = searchKey
@@ -116,8 +116,8 @@ fun LibraryScreen(
     var showBatchAddTagDialog by remember { mutableStateOf(false) }
     var showTagManager by remember { mutableStateOf(false) }
 
-    val folderSortType by viewModel.folderSortType.collectAsState()
-    val fileSortType = viewModel.getFileSortType(currentFolderPath)
+    val folderSorts by viewModel.folderSorts.collectAsState()
+    val searchSort by viewModel.searchSort.collectAsState()
 
     val context = LocalContext.current
     val folderPickerLauncher = rememberLauncherForActivityResult(
@@ -217,8 +217,10 @@ fun LibraryScreen(
                     if (isSearching) {
                         LibrarySearchFilterRow(
                             filters = searchFilters,
+                            sort = searchSort,
                             scopeFolderName = scopeFolderName,
                             showResultFilters = openedSearchFolder == null,
+                            onSortChange = { viewModel.updateSearchSort(it) },
                             onScopeClick = {
                                 viewModel.updateSearchFilters(
                                     searchFilters.copy(
@@ -255,8 +257,7 @@ fun LibraryScreen(
                         isSelectionMode = isSelectionMode,
                         selectedIds = selectedIds,
                         isRefreshing = isRefreshing,
-                        folderSortType = folderSortType,
-                        fileSortType = viewModel.getFileSortType(openedSearchFolder.docId),
+                        sortType = folderSorts.sortFor(openedSearchFolder.docId),
                         onRefresh = { viewModel.refreshFolders() },
                         onNavigate = { viewModel.openSearchSubfolder(it) },
                         onNavigateUp = { viewModel.searchFolderUp() },
@@ -268,8 +269,7 @@ fun LibraryScreen(
                         onAddScanFolder = { folderPickerLauncher.launch(null) },
                         onRemoveScanFolder = { folder -> viewModel.removeScanFolderByItem(folder) },
                         onScanAll = { viewModel.scanAllFolders() },
-                        onFolderSortChange = { viewModel.setFolderSortType(it) },
-                        onFileSortChange = { viewModel.setFileSortType(openedSearchFolder.docId, it) },
+                        onSortChange = { viewModel.setFolderSort(openedSearchFolder.docId, it) },
                         upLabel = if (openedSearchFolder.isAtRoot) "返回搜索结果" else "返回上一级"
                     )
                 } else if (isSearching) {
@@ -357,8 +357,7 @@ fun LibraryScreen(
                             isSelectionMode = isSelectionMode,
                             selectedIds = selectedIds,
                             isRefreshing = isRefreshing,
-                            folderSortType = folderSortType,
-                            fileSortType = fileSortType,
+                            sortType = folderSorts.sortFor(currentFolderPath),
                             onRefresh = { viewModel.refreshFolders() },
                             onNavigate = { viewModel.navigateToFolder(it) },
                             onNavigateUp = { viewModel.navigateUp() },
@@ -371,10 +370,7 @@ fun LibraryScreen(
                             // [问题3修复] 使用 removeScanFolderByItem
                             onRemoveScanFolder = { folder -> viewModel.removeScanFolderByItem(folder) },
                             onScanAll = { viewModel.scanAllFolders() },
-                            onFolderSortChange = { viewModel.setFolderSortType(it) },
-                            onFileSortChange = { sortType ->
-                                currentFolderPath?.let { viewModel.setFileSortType(it, sortType) }
-                            }
+                            onSortChange = { viewModel.setFolderSort(currentFolderPath, it) }
                         )
                     }
                 }
@@ -819,8 +815,10 @@ fun CompactAudioFileItem(
 @Composable
 private fun LibrarySearchFilterRow(
     filters: LibrarySearchFilters,
+    sort: LibrarySortType,
     scopeFolderName: String?,
     showResultFilters: Boolean,
+    onSortChange: (LibrarySortType) -> Unit,
     onScopeClick: () -> Unit,
     onFiltersChange: (LibrarySearchFilters) -> Unit
 ) {
@@ -835,8 +833,33 @@ private fun LibrarySearchFilterRow(
             .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // 打开的文件夹里只按音频条件过滤，范围和类型只用于结果列表
+        // 打开的文件夹里只按音频条件过滤，排序、范围和类型只用于结果列表；文件夹顶部有它自己的排序按钮
         if (showResultFilters) {
+            Box {
+                var showSortMenu by remember { mutableStateOf(false) }
+                FilterChip(
+                    selected = sort != LibrarySortType.PATH,
+                    onClick = { showSortMenu = true },
+                    label = { Text(sort.displayName, maxLines = 1) },
+                    leadingIcon = {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Sort,
+                            contentDescription = "搜索结果排序",
+                            modifier = Modifier.size(FilterChipDefaults.IconSize)
+                        )
+                    },
+                    trailingIcon = {
+                        Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize))
+                    }
+                )
+                LibrarySortMenu(
+                    expanded = showSortMenu,
+                    options = SEARCH_SORT_OPTIONS,
+                    selected = sort,
+                    onSelect = onSortChange,
+                    onDismiss = { showSortMenu = false }
+                )
+            }
             if (scopeFolderName != null) {
                 SearchFilterChip("仅「$scopeFolderName」", filters.scopeDocId != null, onScopeClick)
             }
@@ -855,6 +878,32 @@ private fun LibrarySearchFilterRow(
         }
         SearchFilterChip("收藏", filters.favorite) {
             onFiltersChange(filters.copy(favorite = !filters.favorite))
+        }
+    }
+}
+
+@Composable
+private fun LibrarySortMenu(
+    expanded: Boolean,
+    options: List<LibrarySortType>,
+    selected: LibrarySortType,
+    onSelect: (LibrarySortType) -> Unit,
+    onDismiss: () -> Unit
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        options.forEach { sortType ->
+            DropdownMenuItem(
+                text = { Text(sortType.displayName) },
+                onClick = {
+                    onSelect(sortType)
+                    onDismiss()
+                },
+                leadingIcon = {
+                    if (sortType == selected) {
+                        Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            )
         }
     }
 }
@@ -1058,8 +1107,7 @@ fun FoldersExplorerSection(
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
     isRefreshing: Boolean,
-    folderSortType: FolderSortType,
-    fileSortType: FileSortType,
+    sortType: LibrarySortType,
     onRefresh: () -> Unit,
     onNavigate: (String) -> Unit,
     onNavigateUp: () -> Unit,
@@ -1071,13 +1119,13 @@ fun FoldersExplorerSection(
     onAddScanFolder: () -> Unit,
     onRemoveScanFolder: (FileSystemItem.Folder) -> Unit, // 注意这里的类型
     onScanAll: () -> Unit,
-    onFolderSortChange: (FolderSortType) -> Unit,
-    onFileSortChange: (FileSortType) -> Unit,
+    onSortChange: (LibrarySortType) -> Unit,
     upLabel: String = "返回上一级"
 ) {
     val pullToRefreshState = rememberPullToRefreshState()
-    var showFolderSortMenu by remember { mutableStateOf(false) }
-    var showFileSortMenu by remember { mutableStateOf(false) }
+    // 子文件夹和音频用同一个排序；以前分成两个菜单，只有子文件夹的目录里选「文件排序」看起来没有反应
+    var showSortMenu by remember { mutableStateOf(false) }
+    val sortOptions = if (items.any { it is FileSystemItem.Folder }) FOLDER_SORT_OPTIONS else AUDIO_ONLY_SORT_OPTIONS
 
     // [问题3修复] 列表状态记忆
     val listState = rememberLazyListState()
@@ -1144,30 +1192,18 @@ fun FoldersExplorerSection(
 
                     // 文件夹排序按钮
                     Box {
-                        OutlinedButton(onClick = { showFolderSortMenu = true }) {
+                        OutlinedButton(onClick = { showSortMenu = true }) {
                             Icon(Icons.AutoMirrored.Filled.Sort, null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("排序", maxLines = 1)
                         }
-                        DropdownMenu(
-                            expanded = showFolderSortMenu,
-                            onDismissRequest = { showFolderSortMenu = false }
-                        ) {
-                            FolderSortType.entries.forEach { sortType ->
-                                DropdownMenuItem(
-                                    text = { Text(sortType.displayName) },
-                                    onClick = {
-                                        onFolderSortChange(sortType)
-                                        showFolderSortMenu = false
-                                    },
-                                    leadingIcon = {
-                                        if (sortType == folderSortType) {
-                                            Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
-                                        }
-                                    }
-                                )
-                            }
-                        }
+                        LibrarySortMenu(
+                            expanded = showSortMenu,
+                            options = sortOptions,
+                            selected = sortType,
+                            onSelect = onSortChange,
+                            onDismiss = { showSortMenu = false }
+                        )
                     }
 
                     IconButton(onClick = onScanAll) {
@@ -1203,66 +1239,17 @@ fun FoldersExplorerSection(
                         }
                     }
 
-                    Box {
-                        IconButton(onClick = { showFolderSortMenu = true }) {
-                            Icon(Icons.Default.Folder, null)
-                        }
-                        DropdownMenu(
-                            expanded = showFolderSortMenu,
-                            onDismissRequest = { showFolderSortMenu = false }
-                        ) {
-                            Text(
-                                "文件夹排序",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                            )
-                            FolderSortType.entries.forEach { sortType ->
-                                DropdownMenuItem(
-                                    text = { Text(sortType.displayName) },
-                                    onClick = {
-                                        onFolderSortChange(sortType)
-                                        showFolderSortMenu = false
-                                    },
-                                    leadingIcon = {
-                                        if (sortType == folderSortType) {
-                                            Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-
                     Box(modifier = Modifier.padding(end = 8.dp)) {
-                        IconButton(onClick = { showFileSortMenu = true }) {
+                        IconButton(onClick = { showSortMenu = true }) {
                             Icon(Icons.AutoMirrored.Filled.Sort, "排序")
                         }
-                        DropdownMenu(
-                            expanded = showFileSortMenu,
-                            onDismissRequest = { showFileSortMenu = false }
-                        ) {
-                            Text(
-                                "文件排序",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                            )
-                            FileSortType.entries.forEach { sortType ->
-                                DropdownMenuItem(
-                                    text = { Text(sortType.displayName) },
-                                    onClick = {
-                                        onFileSortChange(sortType)
-                                        showFileSortMenu = false
-                                    },
-                                    leadingIcon = {
-                                        if (sortType == fileSortType) {
-                                            Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
-                                        }
-                                    }
-                                )
-                            }
-                        }
+                        LibrarySortMenu(
+                            expanded = showSortMenu,
+                            options = sortOptions,
+                            selected = sortType,
+                            onSelect = onSortChange,
+                            onDismiss = { showSortMenu = false }
+                        )
                     }
                 }
             }

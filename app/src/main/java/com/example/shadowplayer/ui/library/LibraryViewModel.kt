@@ -51,21 +51,6 @@ data class AudioFileDetails(
     val hasSubtitle: Boolean,
     val parentFolder: String
 )
-enum class FolderSortType(val displayName: String) {
-    NAME_ASC("名称 A→Z"),
-    NAME_DESC("名称 Z→A"),
-    AUDIO_COUNT_DESC("文件数量 多→少"),
-    AUDIO_COUNT_ASC("文件数量 少→多")
-}
-
-enum class FileSortType(val displayName: String) {
-    NAME_ASC("名称 A→Z"),
-    NAME_DESC("名称 Z→A"),
-    PLAY_COUNT_DESC("播放次数 多→少"),
-    PLAY_COUNT_ASC("播放次数 少→多"),
-    RECENT_PLAY("最近播放")
-}
-
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
     private val repository: AudioRepository,
@@ -83,15 +68,16 @@ class LibraryViewModel @Inject constructor(
     private val _searchFilters = MutableStateFlow(loadSearchFilters())
     internal val searchFilters: StateFlow<LibrarySearchFilters> = _searchFilters.asStateFlow()
 
+    private val _searchSort = MutableStateFlow(loadSearchSort())
+    internal val searchSort: StateFlow<LibrarySortType> = _searchSort.asStateFlow()
+
     // 从搜索结果打开的文件夹；返回时回到搜索结果，搜索不会被清空
     private val _searchFolder = MutableStateFlow<SearchFolderLocation?>(null)
     internal val searchFolder: StateFlow<SearchFolderLocation?> = _searchFolder.asStateFlow()
 
-    private val _folderSortType = MutableStateFlow(FolderSortType.NAME_ASC)
-    val folderSortType: StateFlow<FolderSortType> = _folderSortType.asStateFlow()
-
-    private val _fileSortByFolder = MutableStateFlow<Map<String, FileSortType>>(emptyMap())
-    val fileSortByFolder: StateFlow<Map<String, FileSortType>> = _fileSortByFolder.asStateFlow()
+    // 每个文件夹分别记住自己的排序（扫描目录列表的键是 ""），存在 SharedPreferences 里，重新打开 App 还在
+    private val _folderSorts = MutableStateFlow(loadFolderSorts())
+    val folderSorts: StateFlow<Map<String, LibrarySortType>> = _folderSorts.asStateFlow()
 
     // [问题3修复] 用于保存文件夹滚动位置的 Map (path -> index to offset)
     private val _folderScrollPositions = mutableMapOf<String?, Pair<Int, Int>>()
@@ -105,17 +91,25 @@ class LibraryViewModel @Inject constructor(
         return _folderScrollPositions[path] ?: (0 to 0)
     }
 
-    fun setFolderSortType(sortType: FolderSortType) {
-        _folderSortType.value = sortType
+    /** [folderDocId] 为空表示扫描目录列表。选回默认的「名称 A→Z」时删掉这条记录。 */
+    fun setFolderSort(folderDocId: String?, sortType: LibrarySortType) {
+        val key = folderDocId.orEmpty()
+        val sorts = if (sortType == LibrarySortType.NAME_ASC) {
+            _folderSorts.value - key
+        } else {
+            _folderSorts.value + (key to sortType)
+        }
+        _folderSorts.value = sorts
+        prefs.edit { putStringSet(KEY_FOLDER_SORTS, sorts.map { (docId, sort) -> "${sort.name}|$docId" }.toSet()) }
     }
 
-    fun setFileSortType(folderPath: String, sortType: FileSortType) {
-        _fileSortByFolder.value = _fileSortByFolder.value + (folderPath to sortType)
-    }
-
-    fun getFileSortType(folderPath: String?): FileSortType {
-        return folderPath?.let { _fileSortByFolder.value[it] } ?: FileSortType.NAME_ASC
-    }
+    private fun loadFolderSorts(): Map<String, LibrarySortType> =
+        prefs.getStringSet(KEY_FOLDER_SORTS, null).orEmpty().mapNotNull { entry ->
+            val separator = entry.indexOf('|')
+            if (separator < 0) return@mapNotNull null
+            val sort = LibrarySortType.entries.find { it.name == entry.substring(0, separator) } ?: return@mapNotNull null
+            entry.substring(separator + 1) to sort
+        }.toMap()
 
     private val _isSelectionMode = MutableStateFlow(false)
     val isSelectionMode: StateFlow<Boolean> = _isSelectionMode.asStateFlow()
@@ -199,11 +193,9 @@ class LibraryViewModel @Inject constructor(
         _currentFolderDocId,
         scanFolders,
         allAudioFiles,
-        _folderSortType,
-        _fileSortByFolder
-    ) { currentDocId, roots, allFiles, folderSort, fileSortMap ->
-        val fileSort = currentDocId?.let { fileSortMap[it] } ?: FileSortType.NAME_ASC
-        buildFolderContent(currentDocId, roots, allFiles, folderSort, fileSort)
+        _folderSorts
+    ) { currentDocId, roots, allFiles, sorts ->
+        buildFolderContent(currentDocId, roots, allFiles, sorts.sortFor(currentDocId))
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     // 从搜索结果打开的文件夹也应用字幕、未播放、收藏这些条件；没有符合条件音频的子文件夹不显示
@@ -218,12 +210,9 @@ class LibraryViewModel @Inject constructor(
         _searchFolder,
         scanFolders,
         searchFilteredAudioFiles,
-        _folderSortType,
-        _fileSortByFolder
-    ) { location, roots, files, folderSort, fileSortMap ->
-        location?.let {
-            buildFolderContent(it.docId, roots, files, folderSort, fileSortMap[it.docId] ?: FileSortType.NAME_ASC)
-        }.orEmpty()
+        _folderSorts
+    ) { location, roots, files, sorts ->
+        location?.let { buildFolderContent(it.docId, roots, files, sorts.sortFor(it.docId)) }.orEmpty()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val rootTags: StateFlow<List<Tag>> = repository.getRootTags()
@@ -254,13 +243,14 @@ class LibraryViewModel @Inject constructor(
 
     internal val searchResult: StateFlow<LibrarySearchResult?> = combine(
         searchQueryFlow.map(::searchTokens).distinctUntilChanged(),
-        _searchFilters
-    ) { tokens, filters -> tokens to filters }
-        .flatMapLatest { (tokens, filters) ->
+        _searchFilters,
+        _searchSort
+    ) { tokens, filters, sort -> Triple(tokens, filters, sort) }
+        .flatMapLatest { (tokens, filters, sort) ->
             if (tokens.isEmpty()) {
                 flowOf(null)
             } else {
-                searchIndex.filterNotNull().map { index -> searchLibrary(index, tokens, filters) }
+                searchIndex.filterNotNull().map { index -> searchLibrary(index, tokens, filters, sort) }
             }
         }
         .flowOn(Dispatchers.Default)
@@ -362,6 +352,14 @@ class LibraryViewModel @Inject constructor(
         favorite = prefs.getBoolean(KEY_SEARCH_FAVORITE, false),
         scopeDocId = prefs.getString(KEY_SEARCH_SCOPE, null)
     )
+
+    internal fun updateSearchSort(sort: LibrarySortType) {
+        _searchSort.value = sort
+        prefs.edit { putString(KEY_SEARCH_SORT, sort.name) }
+    }
+
+    private fun loadSearchSort() =
+        LibrarySortType.entries.find { it.name == prefs.getString(KEY_SEARCH_SORT, null) } ?: LibrarySortType.PATH
 
     fun openSearchFolder(docId: String) {
         _searchFolder.value = SearchFolderLocation(rootDocId = docId, docId = docId)
@@ -629,5 +627,7 @@ class LibraryViewModel @Inject constructor(
         const val KEY_SEARCH_UNPLAYED = "library_search_unplayed"
         const val KEY_SEARCH_FAVORITE = "library_search_favorite"
         const val KEY_SEARCH_SCOPE = "library_search_scope"
+        const val KEY_SEARCH_SORT = "library_search_sort"
+        const val KEY_FOLDER_SORTS = "library_folder_sorts"
     }
 }

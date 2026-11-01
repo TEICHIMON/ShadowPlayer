@@ -6,6 +6,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 import java.net.URLEncoder
+import java.time.Instant
+import java.time.ZoneOffset
 
 class FolderContentTest {
 
@@ -20,7 +22,7 @@ class FolderContentTest {
 
     @Test
     fun listsSubfoldersWithRecursiveCountsBeforeFiles() {
-        val items = buildFolderContent(BOOK_ID, listOf(root), files, FolderSortType.NAME_ASC, FileSortType.NAME_ASC)
+        val items = buildFolderContent(BOOK_ID, listOf(root), files, LibrarySortType.NAME_ASC)
 
         assertEquals(
             listOf(
@@ -37,7 +39,7 @@ class FolderContentTest {
         val filters = LibrarySearchFilters(hasSubtitle = true)
 
         val items = buildFolderContent(
-            BOOK_ID, listOf(root), files.filter(filters::matchesAudio), FolderSortType.NAME_ASC, FileSortType.NAME_ASC
+            BOOK_ID, listOf(root), files.filter(filters::matchesAudio), LibrarySortType.NAME_ASC
         )
 
         assertEquals(listOf(FileSystemItem.Folder("Unit 1", "$BOOK_ID%2F${encode("Unit 1")}", 1)), items)
@@ -45,9 +47,56 @@ class FolderContentTest {
 
     @Test
     fun rootListingUsesScanFolderNames() {
-        val items = buildFolderContent(null, listOf(root), files, FolderSortType.NAME_ASC, FileSortType.NAME_ASC)
+        val items = buildFolderContent(null, listOf(root), files, LibrarySortType.NAME_ASC)
 
         assertEquals(listOf(FileSystemItem.Folder("我的音频", ROOT_ID, 4)), items)
+    }
+
+    @Test
+    fun oneSortOrdersSubfoldersAndFiles() {
+        // 以前子文件夹和音频各有一个菜单，只有子文件夹的目录里选「文件排序」没有反应
+        val items = buildFolderContent(BOOK_ID, listOf(root), files, LibrarySortType.NAME_DESC)
+
+        assertEquals(listOf("Unit 2", "Unit 1", "Intro"), names(items))
+    }
+
+    @Test
+    fun fileNamesCompareNumbersByValue() {
+        val tracks = listOf(audio(1, "Book/10"), audio(2, "Book/2"), audio(3, "Book/1"))
+
+        assertEquals(listOf("1", "2", "10"), names(buildFolderContent(BOOK_ID, listOf(root), tracks, LibrarySortType.NAME_ASC)))
+    }
+
+    @Test
+    fun folderAddedTimeIsItsNewestAudioAndTheSameDaySortsByName() {
+        val library = listOf(
+            audio(1, "Book/Unit 1/01 Hello", createdAt = DAY_1),
+            audio(2, "Book/Unit 2/01 Numbers", createdAt = DAY_1 + HOUR),
+            audio(3, "Book/Unit 3/01 Colors", createdAt = DAY_1),
+            audio(4, "Book/Unit 3/02 Shapes", createdAt = DAY_3)
+        )
+
+        val newestFirst = buildFolderContent(BOOK_ID, listOf(root), library, LibrarySortType.ADDED_DESC, ZoneOffset.UTC)
+        assertEquals(listOf("Unit 3", "Unit 1", "Unit 2"), names(newestFirst))
+        val oldestFirst = buildFolderContent(BOOK_ID, listOf(root), library, LibrarySortType.ADDED_ASC, ZoneOffset.UTC)
+        assertEquals(listOf("Unit 1", "Unit 2", "Unit 3"), names(oldestFirst))
+    }
+
+    @Test
+    fun recentPlayPutsWhatWasNeverPlayedLast() {
+        val library = listOf(
+            audio(1, "Book/Unit 1/01 Hello", lastPlayedAt = DAY_1),
+            audio(2, "Book/Unit 2/01 Numbers", lastPlayedAt = DAY_3),
+            audio(3, "Book/Unit 3/01 Colors"),
+            audio(4, "Book/b side"),
+            audio(5, "Book/a side", lastPlayedAt = DAY_1),
+            audio(6, "Book/c side")
+        )
+
+        assertEquals(
+            listOf("Unit 2", "Unit 1", "Unit 3", "a side", "b side", "c side"),
+            names(buildFolderContent(BOOK_ID, listOf(root), library, LibrarySortType.RECENT_PLAY))
+        )
     }
 
     @Test
@@ -64,15 +113,31 @@ class FolderContentTest {
         assertEquals("Unit 1", folderDisplayName("$BOOK_ID%2F${encode("Unit 1")}", listOf(root)))
     }
 
-    private fun audio(id: Long, relativePath: String, subtitle: Boolean = false, playCount: Int = 0): AudioFile {
+    private fun audio(
+        id: Long,
+        relativePath: String,
+        subtitle: Boolean = false,
+        playCount: Int = 0,
+        createdAt: Long = DAY_1,
+        lastPlayedAt: Long? = null
+    ): AudioFile {
         val docId = "primary:Music/ShadowTest/$relativePath.mp3".split("/").joinToString("%2F") { encode(it) }
         return AudioFile(
             id = id,
             path = "$TREE_URI/document/$docId",
             title = relativePath.substringAfterLast("/"),
             lrcPath = if (subtitle) "$TREE_URI/document/${docId.removeSuffix(".mp3")}.lrc" else null,
-            playCount = playCount
+            playCount = playCount,
+            createdAt = createdAt,
+            lastPlayedAt = lastPlayedAt
         )
+    }
+
+    private fun names(items: List<FileSystemItem>) = items.map { item ->
+        when (item) {
+            is FileSystemItem.Folder -> item.name
+            is FileSystemItem.File -> item.audioFile.title
+        }
     }
 
     private fun encode(segment: String) = URLEncoder.encode(segment, "UTF-8").replace("+", "%20")
@@ -81,5 +146,8 @@ class FolderContentTest {
         const val TREE_URI = "content://com.android.externalstorage.documents/tree/primary%3AMusic%2FShadowTest"
         const val ROOT_ID = "primary%3AMusic%2FShadowTest"
         const val BOOK_ID = "$ROOT_ID%2FBook"
+        const val HOUR = 3_600_000L
+        val DAY_1 = Instant.parse("2026-10-01T09:00:00Z").toEpochMilli()
+        val DAY_3 = Instant.parse("2026-10-03T09:00:00Z").toEpochMilli()
     }
 }

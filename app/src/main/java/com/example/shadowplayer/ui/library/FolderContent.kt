@@ -3,43 +3,44 @@ package com.example.shadowplayer.ui.library
 import com.example.shadowplayer.data.entity.AudioFile
 import com.example.shadowplayer.data.entity.ScanFolder
 import java.net.URLDecoder
+import java.time.ZoneId
 
 /** 从搜索结果打开的文件夹。[rootDocId] 是在结果里点开的那一层，[docId] 是现在显示的那一层。 */
 internal data class SearchFolderLocation(val rootDocId: String, val docId: String) {
     val isAtRoot: Boolean get() = docId == rootDocId
 }
 
-/** 列出 [currentDocId] 下一层的文件夹和音频；[currentDocId] 为空时列出扫描目录。 */
+/**
+ * 列出 [currentDocId] 下一层的文件夹和音频；[currentDocId] 为空时列出扫描目录。
+ * 文件夹排在音频前面，两者按同一个 [sort] 排。
+ */
 internal fun buildFolderContent(
     currentDocId: String?,
     roots: List<ScanFolder>,
     allFiles: List<AudioFile>,
-    folderSort: FolderSortType,
-    fileSort: FileSortType
+    sort: LibrarySortType,
+    zone: ZoneId = ZoneId.systemDefault()
 ): List<FileSystemItem> {
     if (currentDocId == null) {
         val folders = roots.map { folder ->
             val folderDocId = extractDocumentId(folder.path)
-            val audioCount = allFiles.count { file ->
+            val stats = FolderSortStats()
+            allFiles.forEach { file ->
                 val fileDocId = extractDocumentId(file.path)
-                fileDocId == folderDocId ||
-                        fileDocId.startsWith("$folderDocId%2F") ||
-                        fileDocId.startsWith("$folderDocId/")
+                if (fileDocId == folderDocId ||
+                    fileDocId.startsWith("$folderDocId%2F") ||
+                    fileDocId.startsWith("$folderDocId/")
+                ) {
+                    stats.add(file)
+                }
             }
-            FileSystemItem.Folder(folder.name, folderDocId, audioCount)
+            FileSystemItem.Folder(folder.name, folderDocId, stats.audioCount) to stats
         }
-
-        return when (folderSort) {
-            FolderSortType.NAME_ASC -> folders.sortedBy { it.name.lowercase() }
-            FolderSortType.NAME_DESC -> folders.sortedByDescending { it.name.lowercase() }
-            FolderSortType.AUDIO_COUNT_DESC -> folders.sortedByDescending { it.audioCount }
-            FolderSortType.AUDIO_COUNT_ASC -> folders.sortedBy { it.audioCount }
-        }
+        return folders.sortedFolders(sort, zone)
     }
 
-    val items = mutableListOf<FileSystemItem>()
-    val processedSubFolders = mutableSetOf<String>()
-    val subFolderFiles = mutableMapOf<String, MutableList<AudioFile>>()
+    val files = mutableListOf<AudioFile>()
+    val subFolderStats = LinkedHashMap<String, FolderSortStats>()
 
     val prefixWithEncodedSep = "$currentDocId%2F"
     val prefixWithNormalSep = "$currentDocId/"
@@ -66,48 +67,34 @@ internal fun buildFolderContent(
                     }
                     val subFolderName = remainder.substring(0, separatorIndex)
                     val subFolderDocId = matchedPrefix + subFolderName
-                    subFolderFiles.getOrPut(subFolderDocId) { mutableListOf() }.add(file)
-                    if (!processedSubFolders.contains(subFolderDocId)) {
-                        processedSubFolders.add(subFolderDocId)
-                    }
+                    subFolderStats.getOrPut(subFolderDocId) { FolderSortStats() }.add(file)
                 } else {
-                    items.add(FileSystemItem.File(file))
+                    files.add(file)
                 }
             }
         }
     }
 
-    processedSubFolders.forEach { subFolderDocId ->
-        val filesInSubFolder = subFolderFiles[subFolderDocId] ?: emptyList()
+    val folders = subFolderStats.map { (subFolderDocId, stats) ->
         val subFolderName = subFolderDocId.substringAfterLast("%2F").substringAfterLast("/")
         val displayName = try {
             URLDecoder.decode(subFolderName, "UTF-8")
         } catch (e: Exception) {
             subFolderName
         }
-        items.add(FileSystemItem.Folder(displayName, subFolderDocId, filesInSubFolder.size))
+        FileSystemItem.Folder(displayName, subFolderDocId, stats.audioCount) to stats
     }
 
-    val folders = items.filterIsInstance<FileSystemItem.Folder>()
-    val files = items.filterIsInstance<FileSystemItem.File>()
-
-    val sortedFolders = when (folderSort) {
-        FolderSortType.NAME_ASC -> folders.sortedBy { it.name.lowercase() }
-        FolderSortType.NAME_DESC -> folders.sortedByDescending { it.name.lowercase() }
-        FolderSortType.AUDIO_COUNT_DESC -> folders.sortedByDescending { it.audioCount }
-        FolderSortType.AUDIO_COUNT_ASC -> folders.sortedBy { it.audioCount }
-    }
-
-    val sortedFiles = when (fileSort) {
-        FileSortType.NAME_ASC -> files.sortedBy { it.audioFile.title.lowercase() }
-        FileSortType.NAME_DESC -> files.sortedByDescending { it.audioFile.title.lowercase() }
-        FileSortType.PLAY_COUNT_DESC -> files.sortedByDescending { it.audioFile.playCount }
-        FileSortType.PLAY_COUNT_ASC -> files.sortedBy { it.audioFile.playCount }
-        FileSortType.RECENT_PLAY -> files.sortedByDescending { it.audioFile.lastPlayedAt ?: 0L }
-    }
-
-    return sortedFolders + sortedFiles
+    return folders.sortedFolders(sort, zone) +
+        files.sortedForLibrary(sort, zone) { it.sortKey() }.map { FileSystemItem.File(it) }
 }
+
+private fun List<Pair<FileSystemItem.Folder, FolderSortStats>>.sortedFolders(
+    sort: LibrarySortType,
+    zone: ZoneId
+): List<FileSystemItem> =
+    sortedForLibrary(sort, zone) { (folder, stats) -> stats.sortKey(normalizeSearchText(folder.name)) }
+        .map { it.first }
 
 /** 去掉最后一级，得到上一级文件夹的 ID；没有分隔符时返回 null。 */
 internal fun parentDocumentId(docId: String): String? {

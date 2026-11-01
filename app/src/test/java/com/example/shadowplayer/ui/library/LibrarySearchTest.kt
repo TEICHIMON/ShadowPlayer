@@ -6,6 +6,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.URLEncoder
+import java.time.Instant
+import java.time.ZoneOffset
 
 class LibrarySearchTest {
 
@@ -170,6 +172,27 @@ class LibrarySearchTest {
     }
 
     @Test
+    fun sortAppliesToFolderAndAudioResults() {
+        val library = listOf(
+            audio(1, "Old book/01 Intro", createdAt = DAY_1),
+            audio(2, "New book/01 Intro", createdAt = DAY_3),
+            audio(3, "Old book/02 Intro again", createdAt = DAY_2)
+        )
+        val sortIndex = buildLibrarySearchIndex(library, listOf(root))
+        fun searchSorted(query: String, sort: LibrarySortType) =
+            searchLibrary(sortIndex, searchTokens(query), sort = sort, zone = ZoneOffset.UTC)
+
+        // 默认按路径：同一个文件夹的音频排在一起
+        assertEquals(listOf(2L, 1L, 3L), searchSorted("intro", LibrarySortType.PATH).audioFiles.map { it.audioFile.id })
+        val newestFirst = searchSorted("intro", LibrarySortType.ADDED_DESC)
+        assertEquals(listOf(2L, 3L, 1L), newestFirst.audioFiles.map { it.audioFile.id })
+        assertEquals(LibrarySortType.ADDED_DESC, newestFirst.sort)
+        // 文件夹的添加时间是里面最新加入的音频：Old book 是第 2 天，New book 是第 3 天
+        assertEquals(listOf("New book", "Old book"), searchSorted("book", LibrarySortType.PATH).folders.map { it.name })
+        assertEquals(listOf("Old book", "New book"), searchSorted("book", LibrarySortType.ADDED_ASC).folders.map { it.name })
+    }
+
+    @Test
     fun noFiltersMeansNoMatchedCounts() {
         val result = search("新概念")
 
@@ -185,7 +208,8 @@ class LibrarySearchTest {
         relativePath: String,
         subtitle: Boolean = false,
         playCount: Int = 0,
-        favorite: Boolean = false
+        favorite: Boolean = false,
+        createdAt: Long = DAY_1
     ): AudioFile {
         val docId = "primary:Music/ShadowTest/$relativePath.mp3".split("/").joinToString("%2F") { encode(it) }
         return AudioFile(
@@ -194,7 +218,8 @@ class LibrarySearchTest {
             title = relativePath.substringAfterLast("/"),
             lrcPath = if (subtitle) "$TREE_URI/document/${docId.removeSuffix(".mp3")}.lrc" else null,
             playCount = playCount,
-            isFavorite = favorite
+            isFavorite = favorite,
+            createdAt = createdAt
         )
     }
 
@@ -203,5 +228,8 @@ class LibrarySearchTest {
     private companion object {
         const val TREE_URI = "content://com.android.externalstorage.documents/tree/primary%3AMusic%2FShadowTest"
         const val ROOT_ID = "primary%3AMusic%2FShadowTest"
+        val DAY_1 = Instant.parse("2026-10-01T09:00:00Z").toEpochMilli()
+        val DAY_2 = Instant.parse("2026-10-02T09:00:00Z").toEpochMilli()
+        val DAY_3 = Instant.parse("2026-10-03T09:00:00Z").toEpochMilli()
     }
 }

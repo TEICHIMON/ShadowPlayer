@@ -4,16 +4,26 @@ import com.example.shadowplayer.data.entity.AudioFile
 import com.example.shadowplayer.data.entity.ScanFolder
 import java.net.URLDecoder
 import java.text.Normalizer
+import java.time.ZoneId
 
-/** 扫描目录下的一个文件夹。[docId] 与文件夹浏览使用的 ID 相同，可以直接用于跳转。 */
+/**
+ * 扫描目录下的一个文件夹。[docId] 与文件夹浏览使用的 ID 相同，可以直接用于跳转。
+ * 时间和播放次数是排序用的，含义见 [FolderSortStats]。
+ */
 internal data class SearchableFolder(
     val docId: String,
     val name: String,
     val parentLabel: String,
     val audioCount: Int,
     val nameKey: String,
-    val pathKey: String
-)
+    val pathKey: String,
+    val latestAddedAt: Long = 0L,
+    val latestPlayedAt: Long = 0L,
+    val playCount: Int = 0
+) {
+    val sortKey: LibrarySortKey
+        get() = LibrarySortKey(nameKey, latestAddedAt, latestPlayedAt, playCount, audioCount, path = pathKey)
+}
 
 /**
  * [folderLabel] 是可读的文件夹路径，例如 "ShadowTest/Alice"。
@@ -26,7 +36,10 @@ internal data class SearchableAudio(
     val titleKey: String,
     val pathKey: String,
     val folderDocIds: List<String> = emptyList()
-)
+) {
+    /** 按路径排时先比所在文件夹，再比名字。 */
+    val sortKey: LibrarySortKey get() = audioFile.sortKey(titleKey, path = folderKey)
+}
 
 internal data class LibrarySearchIndex(
     val folders: List<SearchableFolder>,
@@ -63,7 +76,8 @@ internal data class LibrarySearchResult(
     val folders: List<SearchableFolder>,
     val audioFiles: List<SearchableAudio>,
     val filters: LibrarySearchFilters = LibrarySearchFilters(),
-    val matchedAudioCounts: Map<String, Int>? = null
+    val matchedAudioCounts: Map<String, Int>? = null,
+    val sort: LibrarySortType = LibrarySortType.PATH
 ) {
     val isEmpty: Boolean get() = folders.isEmpty() && audioFiles.isEmpty()
 }
@@ -117,7 +131,7 @@ internal fun buildLibrarySearchIndex(
 
         val (scanFolder, rootId) = root
         var folder = folders.getOrPut(rootId) { FolderBuilder(rootId, scanFolder.name, parentLabel = "") }
-        folder.audioCount++
+        folder.stats.add(audioFile)
         val folderDocIds = mutableListOf(rootId)
         var separatorIndex = rootId.length
         while (true) {
@@ -131,7 +145,7 @@ internal fun buildLibrarySearchIndex(
                 val name = decodedNames.getOrPut(encodedName) { decodeDocumentId(encodedName) }
                 FolderBuilder(folderDocId, name, parentLabel = parent.label)
             }
-            folder.audioCount++
+            folder.stats.add(audioFile)
             folderDocIds += folder.docId
             separatorIndex = nextSeparator
         }
@@ -147,11 +161,14 @@ internal fun buildLibrarySearchIndex(
 /**
  * 每个关键词都要出现在路径里，而且至少一个出现在自身名字里。
  * 这样输入书名时只列出这个文件夹，不会把里面几百个音频全部列出来。
+ * 文件夹和音频两部分各自按 [sort] 排。
  */
 internal fun searchLibrary(
     index: LibrarySearchIndex,
     tokens: List<String>,
-    filters: LibrarySearchFilters = LibrarySearchFilters()
+    filters: LibrarySearchFilters = LibrarySearchFilters(),
+    sort: LibrarySortType = LibrarySortType.PATH,
+    zone: ZoneId = ZoneId.systemDefault()
 ): LibrarySearchResult {
     fun matches(nameKey: String, pathKey: String) =
         tokens.all { pathKey.contains(it) } && tokens.any { nameKey.contains(it) }
@@ -183,7 +200,14 @@ internal fun searchLibrary(
                 matches(audio.titleKey, audio.pathKey)
         }
     }
-    return LibrarySearchResult(tokens, folders, audioFiles, filters, matchedAudioCounts)
+    return LibrarySearchResult(
+        tokens = tokens,
+        folders = folders.sortedForLibrary(sort, zone) { it.sortKey },
+        audioFiles = audioFiles.sortedForLibrary(sort, zone) { it.sortKey },
+        filters = filters,
+        matchedAudioCounts = matchedAudioCounts,
+        sort = sort
+    )
 }
 
 /** [docId] 在 [folderDocId] 里面（不含它本身）。 */
@@ -218,15 +242,18 @@ internal fun findSearchMatchRanges(text: String, tokens: List<String>): List<Int
 private class FolderBuilder(val docId: String, val name: String, val parentLabel: String) {
     val label = if (parentLabel.isEmpty()) name else "$parentLabel/$name"
     val pathKey = normalizeSearchText(label)
-    var audioCount = 0
+    val stats = FolderSortStats()
 
     fun build() = SearchableFolder(
         docId = docId,
         name = name,
         parentLabel = parentLabel,
-        audioCount = audioCount,
+        audioCount = stats.audioCount,
         nameKey = normalizeSearchText(name),
-        pathKey = pathKey
+        pathKey = pathKey,
+        latestAddedAt = stats.latestAddedAt,
+        latestPlayedAt = stats.latestPlayedAt,
+        playCount = stats.playCount
     )
 }
 
