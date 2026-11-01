@@ -15,13 +15,17 @@ internal data class SearchableFolder(
     val pathKey: String
 )
 
-/** [folderLabel] 是可读的文件夹路径，例如 "ShadowTest/Alice"。 */
+/**
+ * [folderLabel] 是可读的文件夹路径，例如 "ShadowTest/Alice"。
+ * [folderDocIds] 是从扫描目录到所在文件夹的每一级文件夹 ID；不在扫描目录下的音频为空。
+ */
 internal data class SearchableAudio(
     val audioFile: AudioFile,
     val folderLabel: String,
     val folderKey: String,
     val titleKey: String,
-    val pathKey: String
+    val pathKey: String,
+    val folderDocIds: List<String> = emptyList()
 )
 
 internal data class LibrarySearchIndex(
@@ -29,10 +33,37 @@ internal data class LibrarySearchIndex(
     val audioFiles: List<SearchableAudio>
 )
 
+internal enum class SearchResultType { ALL, FOLDERS, AUDIO }
+
+/**
+ * 搜索的过滤条件。字幕、未播放、收藏只看音频本身；
+ * 文件夹里（含子文件夹）至少有一个符合条件的音频，这个文件夹才会出现在结果里。
+ * [scopeDocId] 不为空时，只搜这个文件夹里面的内容。
+ */
+internal data class LibrarySearchFilters(
+    val resultType: SearchResultType = SearchResultType.ALL,
+    val hasSubtitle: Boolean = false,
+    val unplayed: Boolean = false,
+    val favorite: Boolean = false,
+    val scopeDocId: String? = null
+) {
+    val hasAudioConditions: Boolean get() = hasSubtitle || unplayed || favorite
+    val isActive: Boolean get() = resultType != SearchResultType.ALL || hasAudioConditions || scopeDocId != null
+
+    /** 「未播放」看播放次数：清除播放记录只清空最近播放时间，播放次数还在。 */
+    fun matchesAudio(audioFile: AudioFile): Boolean =
+        (!hasSubtitle || !audioFile.lrcPath.isNullOrBlank()) &&
+            (!unplayed || audioFile.playCount == 0) &&
+            (!favorite || audioFile.isFavorite)
+}
+
+/** [matchedAudioCounts]：有音频条件时，每个文件夹里符合条件的音频数；没有音频条件时为 null。 */
 internal data class LibrarySearchResult(
     val tokens: List<String>,
     val folders: List<SearchableFolder>,
-    val audioFiles: List<SearchableAudio>
+    val audioFiles: List<SearchableAudio>,
+    val filters: LibrarySearchFilters = LibrarySearchFilters(),
+    val matchedAudioCounts: Map<String, Int>? = null
 ) {
     val isEmpty: Boolean get() = folders.isEmpty() && audioFiles.isEmpty()
 }
@@ -87,6 +118,7 @@ internal fun buildLibrarySearchIndex(
         val (scanFolder, rootId) = root
         var folder = folders.getOrPut(rootId) { FolderBuilder(rootId, scanFolder.name, parentLabel = "") }
         folder.audioCount++
+        val folderDocIds = mutableListOf(rootId)
         var separatorIndex = rootId.length
         while (true) {
             val segmentStart = separatorIndex + separatorLength(docId, separatorIndex)
@@ -100,9 +132,10 @@ internal fun buildLibrarySearchIndex(
                 FolderBuilder(folderDocId, name, parentLabel = parent.label)
             }
             folder.audioCount++
+            folderDocIds += folder.docId
             separatorIndex = nextSeparator
         }
-        SearchableAudio(audioFile, folder.label, folder.pathKey, titleKey, "${folder.pathKey}/$titleKey")
+        SearchableAudio(audioFile, folder.label, folder.pathKey, titleKey, "${folder.pathKey}/$titleKey", folderDocIds)
     }
 
     return LibrarySearchIndex(
@@ -115,16 +148,49 @@ internal fun buildLibrarySearchIndex(
  * 每个关键词都要出现在路径里，而且至少一个出现在自身名字里。
  * 这样输入书名时只列出这个文件夹，不会把里面几百个音频全部列出来。
  */
-internal fun searchLibrary(index: LibrarySearchIndex, tokens: List<String>): LibrarySearchResult {
+internal fun searchLibrary(
+    index: LibrarySearchIndex,
+    tokens: List<String>,
+    filters: LibrarySearchFilters = LibrarySearchFilters()
+): LibrarySearchResult {
     fun matches(nameKey: String, pathKey: String) =
         tokens.all { pathKey.contains(it) } && tokens.any { nameKey.contains(it) }
 
-    return LibrarySearchResult(
-        tokens = tokens,
-        folders = index.folders.filter { matches(it.nameKey, it.pathKey) },
-        audioFiles = index.audioFiles.filter { matches(it.titleKey, it.pathKey) }
-    )
+    val scope = filters.scopeDocId
+    val matchedAudioCounts = if (filters.hasAudioConditions) {
+        HashMap<String, Int>().also { counts ->
+            index.audioFiles.forEach { audio ->
+                if (filters.matchesAudio(audio.audioFile)) {
+                    audio.folderDocIds.forEach { counts[it] = (counts[it] ?: 0) + 1 }
+                }
+            }
+        }
+    } else {
+        null
+    }
+
+    val folders = if (filters.resultType == SearchResultType.AUDIO) emptyList() else {
+        index.folders.filter { folder ->
+            (scope == null || isInsideFolder(folder.docId, scope)) &&
+                (matchedAudioCounts == null || (matchedAudioCounts[folder.docId] ?: 0) > 0) &&
+                matches(folder.nameKey, folder.pathKey)
+        }
+    }
+    val audioFiles = if (filters.resultType == SearchResultType.FOLDERS) emptyList() else {
+        index.audioFiles.filter { audio ->
+            (scope == null || scope in audio.folderDocIds) &&
+                filters.matchesAudio(audio.audioFile) &&
+                matches(audio.titleKey, audio.pathKey)
+        }
+    }
+    return LibrarySearchResult(tokens, folders, audioFiles, filters, matchedAudioCounts)
 }
+
+/** [docId] 在 [folderDocId] 里面（不含它本身）。 */
+internal fun isInsideFolder(docId: String, folderDocId: String): Boolean =
+    docId.length > folderDocId.length &&
+        docId.startsWith(folderDocId) &&
+        separatorLength(docId, folderDocId.length) > 0
 
 /** 关键词在原文中的位置（忽略大小写），重叠的区间会合并，用于高亮。 */
 internal fun findSearchMatchRanges(text: String, tokens: List<String>): List<IntRange> {

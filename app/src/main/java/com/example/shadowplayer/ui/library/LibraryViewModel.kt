@@ -1,12 +1,14 @@
 package com.example.shadowplayer.ui.library
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.content.edit
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -68,13 +70,22 @@ enum class FileSortType(val displayName: String) {
 class LibraryViewModel @Inject constructor(
     private val repository: AudioRepository,
     private val sentencePlayer: SentencePlayer,
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val prefs: SharedPreferences
 ) : ViewModel() {
 
-    // 输入框直接读写 Compose State，保证输入法同步；Flow 只用于在后台计算搜索结果
-    var searchQuery by mutableStateOf("")
+    // 输入框直接读写 Compose State，保证输入法同步；Flow 只用于在后台计算搜索结果。
+    // 搜索词和过滤条件都存在 SharedPreferences 里，退出 App 再打开也还在，直到用户点清空
+    var searchQuery by mutableStateOf(prefs.getString(KEY_SEARCH_QUERY, null).orEmpty())
         private set
-    private val searchQueryFlow = MutableStateFlow("")
+    private val searchQueryFlow = MutableStateFlow(searchQuery)
+
+    private val _searchFilters = MutableStateFlow(loadSearchFilters())
+    internal val searchFilters: StateFlow<LibrarySearchFilters> = _searchFilters.asStateFlow()
+
+    // 从搜索结果打开的文件夹；返回时回到搜索结果，搜索不会被清空
+    private val _searchFolder = MutableStateFlow<SearchFolderLocation?>(null)
+    internal val searchFolder: StateFlow<SearchFolderLocation?> = _searchFolder.asStateFlow()
 
     private val _folderSortType = MutableStateFlow(FolderSortType.NAME_ASC)
     val folderSortType: StateFlow<FolderSortType> = _folderSortType.asStateFlow()
@@ -134,7 +145,12 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    private val allAudioFiles: StateFlow<List<AudioFile>> = repository.getAllAudioFiles()
+    // 只向 Room 订阅一次，几个列表共用。搜索索引直接用这个 Flow：
+    // stateIn 的初始空列表会让启动时恢复的搜索先显示一下「没有找到」
+    private val audioFilesFromDb: SharedFlow<List<AudioFile>> = repository.getAllAudioFiles()
+        .shareIn(viewModelScope, SharingStarted.Lazily, replay = 1)
+
+    private val allAudioFiles: StateFlow<List<AudioFile>> = audioFilesFromDb
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val recordGroups: StateFlow<List<FolderGroup>> = combine(
@@ -187,98 +203,28 @@ class LibraryViewModel @Inject constructor(
         _fileSortByFolder
     ) { currentDocId, roots, allFiles, folderSort, fileSortMap ->
         val fileSort = currentDocId?.let { fileSortMap[it] } ?: FileSortType.NAME_ASC
-
-        if (currentDocId == null) {
-            val folders = roots.map { folder ->
-                val folderDocId = extractDocumentId(folder.path)
-                val audioCount = allFiles.count { file ->
-                    val fileDocId = extractDocumentId(file.path)
-                    fileDocId == folderDocId ||
-                            fileDocId.startsWith("$folderDocId%2F") ||
-                            fileDocId.startsWith("$folderDocId/")
-                }
-                FileSystemItem.Folder(folder.name, folderDocId, audioCount)
-            }
-
-            when (folderSort) {
-                FolderSortType.NAME_ASC -> folders.sortedBy { it.name.lowercase() }
-                FolderSortType.NAME_DESC -> folders.sortedByDescending { it.name.lowercase() }
-                FolderSortType.AUDIO_COUNT_DESC -> folders.sortedByDescending { it.audioCount }
-                FolderSortType.AUDIO_COUNT_ASC -> folders.sortedBy { it.audioCount }
-            }
-        } else {
-            val items = mutableListOf<FileSystemItem>()
-            val processedSubFolders = mutableSetOf<String>()
-            val subFolderFiles = mutableMapOf<String, MutableList<AudioFile>>()
-
-            val prefixWithEncodedSep = "$currentDocId%2F"
-            val prefixWithNormalSep = "$currentDocId/"
-
-            allFiles.forEach { file ->
-                val fileDocId = extractDocumentId(file.path)
-                val matchedPrefix = when {
-                    fileDocId.startsWith(prefixWithEncodedSep) -> prefixWithEncodedSep
-                    fileDocId.startsWith(prefixWithNormalSep) -> prefixWithNormalSep
-                    else -> null
-                }
-
-                if (matchedPrefix != null) {
-                    val remainder = fileDocId.removePrefix(matchedPrefix)
-                    if (remainder.isNotEmpty()) {
-                        val nextEncodedSep = remainder.indexOf("%2F")
-                        val nextNormalSep = remainder.indexOf("/")
-
-                        if (nextEncodedSep != -1 || nextNormalSep != -1) {
-                            val separatorIndex = when {
-                                nextEncodedSep != -1 && nextNormalSep != -1 -> minOf(nextEncodedSep, nextNormalSep)
-                                nextEncodedSep != -1 -> nextEncodedSep
-                                else -> nextNormalSep
-                            }
-                            val subFolderName = remainder.substring(0, separatorIndex)
-                            val subFolderDocId = matchedPrefix + subFolderName
-                            subFolderFiles.getOrPut(subFolderDocId) { mutableListOf() }.add(file)
-                            if (!processedSubFolders.contains(subFolderDocId)) {
-                                processedSubFolders.add(subFolderDocId)
-                            }
-                        } else {
-                            items.add(FileSystemItem.File(file))
-                        }
-                    }
-                }
-            }
-
-            processedSubFolders.forEach { subFolderDocId ->
-                val filesInSubFolder = subFolderFiles[subFolderDocId] ?: emptyList()
-                val subFolderName = subFolderDocId.substringAfterLast("%2F").substringAfterLast("/")
-                val displayName = try {
-                    URLDecoder.decode(subFolderName, "UTF-8")
-                } catch (e: Exception) {
-                    subFolderName
-                }
-                items.add(FileSystemItem.Folder(displayName, subFolderDocId, filesInSubFolder.size))
-            }
-
-            val folders = items.filterIsInstance<FileSystemItem.Folder>()
-            val files = items.filterIsInstance<FileSystemItem.File>()
-
-            val sortedFolders = when (folderSort) {
-                FolderSortType.NAME_ASC -> folders.sortedBy { it.name.lowercase() }
-                FolderSortType.NAME_DESC -> folders.sortedByDescending { it.name.lowercase() }
-                FolderSortType.AUDIO_COUNT_DESC -> folders.sortedByDescending { it.audioCount }
-                FolderSortType.AUDIO_COUNT_ASC -> folders.sortedBy { it.audioCount }
-            }
-
-            val sortedFiles = when (fileSort) {
-                FileSortType.NAME_ASC -> files.sortedBy { it.audioFile.title.lowercase() }
-                FileSortType.NAME_DESC -> files.sortedByDescending { it.audioFile.title.lowercase() }
-                FileSortType.PLAY_COUNT_DESC -> files.sortedByDescending { it.audioFile.playCount }
-                FileSortType.PLAY_COUNT_ASC -> files.sortedBy { it.audioFile.playCount }
-                FileSortType.RECENT_PLAY -> files.sortedByDescending { it.audioFile.lastPlayedAt ?: 0L }
-            }
-
-            sortedFolders + sortedFiles
-        }
+        buildFolderContent(currentDocId, roots, allFiles, folderSort, fileSort)
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    // 从搜索结果打开的文件夹也应用字幕、未播放、收藏这些条件；没有符合条件音频的子文件夹不显示
+    private val searchFilteredAudioFiles: Flow<List<AudioFile>> = combine(
+        allAudioFiles,
+        _searchFilters
+    ) { files, filters ->
+        if (filters.hasAudioConditions) files.filter(filters::matchesAudio) else files
+    }
+
+    internal val searchFolderContent: StateFlow<List<FileSystemItem>> = combine(
+        _searchFolder,
+        scanFolders,
+        searchFilteredAudioFiles,
+        _folderSortType,
+        _fileSortByFolder
+    ) { location, roots, files, folderSort, fileSortMap ->
+        location?.let {
+            buildFolderContent(it.docId, roots, files, folderSort, fileSortMap[it.docId] ?: FileSortType.NAME_ASC)
+        }.orEmpty()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val rootTags: StateFlow<List<Tag>> = repository.getRootTags()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
@@ -295,24 +241,26 @@ class LibraryViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // 搜索范围是整个文件库：文件名和文件夹名都参与匹配，计算放在后台线程
+    // 搜索范围是整个文件库：文件名和文件夹名都参与匹配，计算放在后台线程。
+    // 两个数据源都等 Room 的真实数据，不用 stateIn 的初始空列表
     private val searchIndex: StateFlow<LibrarySearchIndex?> = combine(
-        allAudioFiles,
-        scanFolders
+        audioFilesFromDb,
+        repository.getAllScanFolders()
     ) { files, roots ->
         buildLibrarySearchIndex(files, roots)
     }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    internal val searchResult: StateFlow<LibrarySearchResult?> = searchQueryFlow
-        .map(::searchTokens)
-        .distinctUntilChanged()
-        .flatMapLatest { tokens ->
+    internal val searchResult: StateFlow<LibrarySearchResult?> = combine(
+        searchQueryFlow.map(::searchTokens).distinctUntilChanged(),
+        _searchFilters
+    ) { tokens, filters -> tokens to filters }
+        .flatMapLatest { (tokens, filters) ->
             if (tokens.isEmpty()) {
                 flowOf(null)
             } else {
-                searchIndex.filterNotNull().map { index -> searchLibrary(index, tokens) }
+                searchIndex.filterNotNull().map { index -> searchLibrary(index, tokens, filters) }
             }
         }
         .flowOn(Dispatchers.Default)
@@ -387,8 +335,50 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun search(query: String) {
+        if (query == searchQuery) return
         searchQuery = query
         searchQueryFlow.value = query
+        // 改了搜索词就回到结果列表
+        _searchFolder.value = null
+        prefs.edit { putString(KEY_SEARCH_QUERY, query) }
+    }
+
+    internal fun updateSearchFilters(filters: LibrarySearchFilters) {
+        _searchFilters.value = filters
+        prefs.edit {
+            putString(KEY_SEARCH_RESULT_TYPE, filters.resultType.name)
+            putBoolean(KEY_SEARCH_HAS_SUBTITLE, filters.hasSubtitle)
+            putBoolean(KEY_SEARCH_UNPLAYED, filters.unplayed)
+            putBoolean(KEY_SEARCH_FAVORITE, filters.favorite)
+            putString(KEY_SEARCH_SCOPE, filters.scopeDocId)
+        }
+    }
+
+    private fun loadSearchFilters() = LibrarySearchFilters(
+        resultType = SearchResultType.entries.find { it.name == prefs.getString(KEY_SEARCH_RESULT_TYPE, null) }
+            ?: SearchResultType.ALL,
+        hasSubtitle = prefs.getBoolean(KEY_SEARCH_HAS_SUBTITLE, false),
+        unplayed = prefs.getBoolean(KEY_SEARCH_UNPLAYED, false),
+        favorite = prefs.getBoolean(KEY_SEARCH_FAVORITE, false),
+        scopeDocId = prefs.getString(KEY_SEARCH_SCOPE, null)
+    )
+
+    fun openSearchFolder(docId: String) {
+        _searchFolder.value = SearchFolderLocation(rootDocId = docId, docId = docId)
+    }
+
+    fun openSearchSubfolder(docId: String) {
+        _searchFolder.value = _searchFolder.value?.copy(docId = docId)
+    }
+
+    /** 回到上一级；已经是从结果里点开的那一层时，回到搜索结果。 */
+    fun searchFolderUp() {
+        val location = _searchFolder.value ?: return
+        _searchFolder.value = if (location.isAtRoot) {
+            null
+        } else {
+            parentDocumentId(location.docId)?.let { location.copy(docId = it) }
+        }
     }
 
     fun navigateToFolder(docId: String) { _currentFolderDocId.value = docId }
@@ -396,18 +386,7 @@ class LibraryViewModel @Inject constructor(
     fun navigateUp() {
         val currentDocId = _currentFolderDocId.value ?: return
         val isRoot = scanFolders.value.any { extractDocumentId(it.path) == currentDocId }
-        if (isRoot) {
-            _currentFolderDocId.value = null
-        } else {
-            val lastEncodedSep = currentDocId.lastIndexOf("%2F")
-            val lastNormalSep = currentDocId.lastIndexOf("/")
-            val parentDocId = when {
-                lastEncodedSep > lastNormalSep -> currentDocId.substring(0, lastEncodedSep)
-                lastNormalSep != -1 -> currentDocId.substring(0, lastNormalSep)
-                else -> null
-            }
-            _currentFolderDocId.value = parentDocId
-        }
+        _currentFolderDocId.value = if (isRoot) null else parentDocumentId(currentDocId)
     }
 
     fun toggleFolderExpanded(path: String) {
@@ -641,5 +620,14 @@ class LibraryViewModel @Inject constructor(
                 repository.clearPlayHistory(idsToUpdate)
             }
         }
+    }
+
+    private companion object {
+        const val KEY_SEARCH_QUERY = "library_search_query"
+        const val KEY_SEARCH_RESULT_TYPE = "library_search_result_type"
+        const val KEY_SEARCH_HAS_SUBTITLE = "library_search_has_subtitle"
+        const val KEY_SEARCH_UNPLAYED = "library_search_unplayed"
+        const val KEY_SEARCH_FAVORITE = "library_search_favorite"
+        const val KEY_SEARCH_SCOPE = "library_search_scope"
     }
 }

@@ -11,11 +11,14 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -27,6 +30,7 @@ import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -72,7 +76,12 @@ fun LibraryScreen(
     val isRefreshing by viewModel.isRefreshing.collectAsState()
     val searchQuery = viewModel.searchQuery
     val searchResult by viewModel.searchResult.collectAsState()
+    val searchFilters by viewModel.searchFilters.collectAsState()
+    val searchFolder by viewModel.searchFolder.collectAsState()
+    val searchFolderContent by viewModel.searchFolderContent.collectAsState()
     val isSearching = searchQuery.isNotBlank()
+    // 从搜索结果打开的文件夹；为空时显示结果列表
+    val openedSearchFolder = if (isSearching) searchFolder else null
     val focusManager = LocalFocusManager.current
     val isSelectionMode by viewModel.isSelectionMode.collectAsState()
     val selectedIds by viewModel.selectedAudioIds.collectAsState()
@@ -81,7 +90,27 @@ fun LibraryScreen(
 
     val currentPlayingAudioId by viewModel.currentPlayingAudioId.collectAsState()
 
-    var selectedTab by remember { mutableStateOf(LibraryTab.RECORDS) }
+    // 从播放页返回时停在原来的标签页
+    var selectedTab by rememberSaveable { mutableStateOf(LibraryTab.RECORDS) }
+
+    // 结果列表的位置放在这里：从文件夹或播放页返回结果时，列表停在原来的位置
+    val searchListState = rememberLazyListState()
+    var lastSearchKey by rememberSaveable { mutableStateOf("") }
+    val searchKey = searchResult?.let { "${it.tokens}|${it.filters}" }
+    LaunchedEffect(searchKey) {
+        // 关键词或过滤条件变了，回到顶部，先看到最新的结果
+        if (searchKey != null && searchKey != lastSearchKey) {
+            searchListState.scrollToItem(0)
+            lastSearchKey = searchKey
+        }
+    }
+
+    // 在「文件夹」页打开了某个文件夹时，可以只搜这个文件夹
+    val scopeFolderDocId = searchFilters.scopeDocId
+        ?: currentFolderPath?.takeIf { selectedTab == LibraryTab.FOLDERS }
+    val scopeFolderName = remember(scopeFolderDocId, scanFolders) {
+        scopeFolderDocId?.let { folderDisplayName(it, scanFolders) }
+    }
     var showAddTagDialog by remember { mutableStateOf(false) }
     var showAddToTagDialog by remember { mutableStateOf<AudioFile?>(null) }
     var showBatchAddTagDialog by remember { mutableStateOf(false) }
@@ -101,20 +130,24 @@ fun LibraryScreen(
         }
     }
 
-    BackHandler(enabled = isSelectionMode || showTagManager || isSearching || (selectedTab == LibraryTab.FOLDERS && currentFolderPath != null)) {
+    // 返回键不清空搜索：打开的文件夹逐级退回结果列表；在结果列表按返回键和平时一样退到后台，
+    // 搜索只在点清空按钮时清掉
+    val isBrowsingFolderTab = !isSearching && selectedTab == LibraryTab.FOLDERS && currentFolderPath != null
+    BackHandler(enabled = isSelectionMode || showTagManager || openedSearchFolder != null || isBrowsingFolderTab) {
         when {
             showTagManager -> showTagManager = false
             isSelectionMode -> viewModel.exitSelectionMode()
-            isSearching -> {
-                viewModel.search("")
-                focusManager.clearFocus()
-            }
-            selectedTab == LibraryTab.FOLDERS && currentFolderPath != null -> viewModel.navigateUp()
+            openedSearchFolder != null -> viewModel.searchFolderUp()
+            isBrowsingFolderTab -> viewModel.navigateUp()
         }
     }
 
     val currentViewList = if (isSearching) {
-        searchResult?.audioFiles.orEmpty().map { it.audioFile }
+        if (openedSearchFolder != null) {
+            searchFolderContent.mapNotNull { (it as? FileSystemItem.File)?.audioFile }
+        } else {
+            searchResult?.audioFiles.orEmpty().map { it.audioFile }
+        }
     } else when (selectedTab) {
         LibraryTab.RECORDS -> recordGroups.flatMap { it.audioFiles }
         LibraryTab.FAVORITES -> favorites
@@ -180,8 +213,22 @@ fun LibraryScreen(
                         shape = MaterialTheme.shapes.medium
                     )
 
-                    // 搜索时显示全库结果，标签页暂时隐藏
-                    if (!isSearching) {
+                    // 搜索时显示全库结果，标签页暂时隐藏，换成过滤条件
+                    if (isSearching) {
+                        LibrarySearchFilterRow(
+                            filters = searchFilters,
+                            scopeFolderName = scopeFolderName,
+                            showResultFilters = openedSearchFolder == null,
+                            onScopeClick = {
+                                viewModel.updateSearchFilters(
+                                    searchFilters.copy(
+                                        scopeDocId = if (searchFilters.scopeDocId == null) scopeFolderDocId else null
+                                    )
+                                )
+                            },
+                            onFiltersChange = { viewModel.updateSearchFilters(it) }
+                        )
+                    } else {
                         ScrollableTabRow(
                             selectedTabIndex = selectedTab.ordinal,
                             modifier = Modifier.fillMaxWidth(),
@@ -198,18 +245,44 @@ fun LibraryScreen(
 
                 if (isScanning) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
 
-                if (isSearching) {
+                if (openedSearchFolder != null) {
+                    FoldersExplorerSection(
+                        viewModel = viewModel,
+                        currentPath = openedSearchFolder.docId,
+                        items = searchFolderContent,
+                        currentPlayingAudioId = currentPlayingAudioId,
+                        expandedFolders = expandedFolders,
+                        isSelectionMode = isSelectionMode,
+                        selectedIds = selectedIds,
+                        isRefreshing = isRefreshing,
+                        folderSortType = folderSortType,
+                        fileSortType = viewModel.getFileSortType(openedSearchFolder.docId),
+                        onRefresh = { viewModel.refreshFolders() },
+                        onNavigate = { viewModel.openSearchSubfolder(it) },
+                        onNavigateUp = { viewModel.searchFolderUp() },
+                        onToggleExpand = { viewModel.toggleFolderExpanded(it) },
+                        onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else handleFileSelected(it) },
+                        onFileLongClick = { viewModel.showAudioDetails(it) },
+                        onFavoriteClick = { viewModel.toggleFavorite(it) },
+                        onAddTagClick = { showAddToTagDialog = it },
+                        onAddScanFolder = { folderPickerLauncher.launch(null) },
+                        onRemoveScanFolder = { folder -> viewModel.removeScanFolderByItem(folder) },
+                        onScanAll = { viewModel.scanAllFolders() },
+                        onFolderSortChange = { viewModel.setFolderSortType(it) },
+                        onFileSortChange = { viewModel.setFileSortType(openedSearchFolder.docId, it) },
+                        upLabel = if (openedSearchFolder.isAtRoot) "返回搜索结果" else "返回上一级"
+                    )
+                } else if (isSearching) {
                     LibrarySearchSection(
                         query = searchQuery.trim(),
                         result = searchResult,
+                        listState = searchListState,
                         currentPlayingAudioId = currentPlayingAudioId,
                         isSelectionMode = isSelectionMode,
                         selectedIds = selectedIds,
                         onFolderClick = { folder ->
                             focusManager.clearFocus()
-                            viewModel.search("")
-                            selectedTab = LibraryTab.FOLDERS
-                            viewModel.navigateToFolder(folder.docId)
+                            viewModel.openSearchFolder(folder.docId)
                         },
                         onFileClick = { if (isSelectionMode) viewModel.toggleSelection(it.id) else handleFileSelected(it) },
                         onFileLongClick = { viewModel.showAudioDetails(it) },
@@ -744,9 +817,74 @@ fun CompactAudioFileItem(
 }
 
 @Composable
+private fun LibrarySearchFilterRow(
+    filters: LibrarySearchFilters,
+    scopeFolderName: String?,
+    showResultFilters: Boolean,
+    onScopeClick: () -> Unit,
+    onFiltersChange: (LibrarySearchFilters) -> Unit
+) {
+    fun toggleResultType(type: SearchResultType) = onFiltersChange(
+        filters.copy(resultType = if (filters.resultType == type) SearchResultType.ALL else type)
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // 打开的文件夹里只按音频条件过滤，范围和类型只用于结果列表
+        if (showResultFilters) {
+            if (scopeFolderName != null) {
+                SearchFilterChip("仅「$scopeFolderName」", filters.scopeDocId != null, onScopeClick)
+            }
+            SearchFilterChip("文件夹", filters.resultType == SearchResultType.FOLDERS) {
+                toggleResultType(SearchResultType.FOLDERS)
+            }
+            SearchFilterChip("音频", filters.resultType == SearchResultType.AUDIO) {
+                toggleResultType(SearchResultType.AUDIO)
+            }
+        }
+        SearchFilterChip("有字幕", filters.hasSubtitle) {
+            onFiltersChange(filters.copy(hasSubtitle = !filters.hasSubtitle))
+        }
+        SearchFilterChip("未播放", filters.unplayed) {
+            onFiltersChange(filters.copy(unplayed = !filters.unplayed))
+        }
+        SearchFilterChip("收藏", filters.favorite) {
+            onFiltersChange(filters.copy(favorite = !filters.favorite))
+        }
+    }
+}
+
+@Composable
+private fun SearchFilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = {
+            Text(
+                text = label,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 200.dp)
+            )
+        },
+        leadingIcon = if (selected) {
+            { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+        } else {
+            null
+        }
+    )
+}
+
+@Composable
 private fun LibrarySearchSection(
     query: String,
     result: LibrarySearchResult?,
+    listState: LazyListState,
     currentPlayingAudioId: Long,
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
@@ -775,7 +913,11 @@ private fun LibrarySearchSection(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "可以搜索文件名或文件夹名，多个关键词用空格分开",
+                    text = if (result.filters.isActive) {
+                        "试试去掉一些过滤条件"
+                    } else {
+                        "可以搜索文件名或文件夹名，多个关键词用空格分开"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                 )
@@ -783,10 +925,6 @@ private fun LibrarySearchSection(
         }
         return
     }
-
-    val listState = rememberLazyListState()
-    // 关键词变化后回到顶部，先看到最新的结果
-    LaunchedEffect(result.tokens) { listState.scrollToItem(0) }
 
     LazyColumn(
         state = listState,
@@ -798,6 +936,7 @@ private fun LibrarySearchSection(
             items(result.folders, key = { "folder:${it.docId}" }) { folder ->
                 SearchFolderItem(
                     folder = folder,
+                    matchedAudioCount = result.matchedAudioCounts?.get(folder.docId),
                     highlightTokens = result.tokens,
                     onClick = { onFolderClick(folder) }
                 )
@@ -837,12 +976,19 @@ private fun SearchSectionHeader(title: String, count: Int) {
     )
 }
 
+/** [matchedAudioCount] 不为空时，表示有音频过滤条件，显示「符合条件数 / 总数」。 */
 @Composable
 private fun SearchFolderItem(
     folder: SearchableFolder,
+    matchedAudioCount: Int?,
     highlightTokens: List<String>,
     onClick: () -> Unit
 ) {
+    val countLabel = if (matchedAudioCount != null) {
+        "$matchedAudioCount / ${folder.audioCount} 首音频"
+    } else {
+        "${folder.audioCount} 首音频"
+    }
     ListItem(
         headlineContent = {
             Text(
@@ -857,7 +1003,7 @@ private fun SearchFolderItem(
         },
         supportingContent = {
             Text(
-                text = listOf("${folder.audioCount} 首音频", folder.parentLabel)
+                text = listOf(countLabel, folder.parentLabel)
                     .filter { it.isNotEmpty() }
                     .joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
@@ -926,7 +1072,8 @@ fun FoldersExplorerSection(
     onRemoveScanFolder: (FileSystemItem.Folder) -> Unit, // 注意这里的类型
     onScanAll: () -> Unit,
     onFolderSortChange: (FolderSortType) -> Unit,
-    onFileSortChange: (FileSortType) -> Unit
+    onFileSortChange: (FileSortType) -> Unit,
+    upLabel: String = "返回上一级"
 ) {
     val pullToRefreshState = rememberPullToRefreshState()
     var showFolderSortMenu by remember { mutableStateOf(false) }
@@ -941,11 +1088,13 @@ fun FoldersExplorerSection(
         listState.scrollToItem(index, offset)
     }
 
-    // 在退出组件时保存当前位置（例如切换 Tab）
+    // 在退出组件时保存当前位置（例如切换 Tab）。
+    // 要用最新的路径：进入子文件夹后再去播放页，位置应该存在子文件夹下
+    val latestPath by rememberUpdatedState(currentPath)
     DisposableEffect(Unit) {
         onDispose {
             viewModel.saveScrollPosition(
-                currentPath,
+                latestPath,
                 listState.firstVisibleItemIndex,
                 listState.firstVisibleItemScrollOffset
             )
@@ -1047,7 +1196,7 @@ fun FoldersExplorerSection(
                             )
                             Spacer(Modifier.width(12.dp))
                             Text(
-                                "返回上一级",
+                                upLabel,
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.primary
                             )
